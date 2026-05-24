@@ -288,7 +288,7 @@ export function useCesiumViewer({
       position: Cesium.Cartesian3.fromDegrees(sys.lon, sys.lat, GROUND_ALT + 120),
       label: {
         text: "Nowa pozycja baterii\nPrzesuń kursorem",
-        font: "500 28px 'Inter', system-ui, -apple-system, sans-serif",
+        font: "500 28px sans-serif",
         fillColor: Cesium.Color.fromCssColorString("#0b1220"),
         style: Cesium.LabelStyle.FILL_AND_OUTLINE,
         outlineColor: Cesium.Color.WHITE,
@@ -493,7 +493,7 @@ export function useCesiumViewer({
       position: Cesium.Cartesian3.fromDegrees(lon0, lat0, GROUND_ALT + labelHeight),
       label: {
         text: `${weapon.name}\nZasięg ${(weapon.range / 1000).toFixed(1)} km\n${lat0.toFixed(4)}°N · ${lon0.toFixed(4)}°E\nKliknij, aby rozstawić`,
-        font: "500 28px 'Inter', system-ui, -apple-system, sans-serif",
+        font: "500 28px sans-serif",
         fillColor: Cesium.Color.fromCssColorString("#0b1220"),
         style: Cesium.LabelStyle.FILL_AND_OUTLINE,
         outlineColor: Cesium.Color.WHITE,
@@ -682,7 +682,7 @@ export function useCesiumViewer({
       position: Cesium.Cartesian3.fromDegrees(lon, lat, GROUND_ALT + labelHeight),
       label: {
         text: sys.name + (isRelocating ? ` · marsz ${sys.relocationSecondsLeft}s` : ""),
-        font: "600 32px 'Inter', system-ui, -apple-system, sans-serif",
+        font: "600 32px sans-serif",
         fillColor: Cesium.Color.fromCssColorString(isRelocating ? "#d97706" : "#0b1220"),
         style: Cesium.LabelStyle.FILL_AND_OUTLINE,
         outlineColor: Cesium.Color.WHITE,
@@ -703,23 +703,6 @@ export function useCesiumViewer({
     let cleanup: (() => void) | null = null;
 
     const initialize = async () => {
-      // Cesium rasterizes label text into SDF atlases at first draw. If "Inter" / "JetBrains Mono"
-      // haven't loaded yet, the atlas is built from fallback glyphs (or empty boxes) and never
-      // regenerates — labels appear as visual noise on production where Cesium init outpaces
-      // the Google Fonts CSS roundtrip.
-      if (typeof document !== "undefined" && (document as any).fonts?.load) {
-        try {
-          await Promise.all([
-            (document as any).fonts.load("500 28px Inter"),
-            (document as any).fonts.load("600 32px Inter"),
-            (document as any).fonts.load("500 22px 'JetBrains Mono'"),
-          ]);
-        } catch {
-          // fonts failed to load — proceed with system fallback
-        }
-      }
-      if (cancelled) return;
-
       const Cesium = (window as any).Cesium;
       if (!Cesium || !containerRef.current) return;
 
@@ -1216,7 +1199,7 @@ export function useCesiumViewer({
           position: Cesium.Cartesian3.fromDegrees(lon, lat, GROUND_ALT + labelHeight),
           label: {
             text: newSys.name,
-            font: "600 32px 'Inter', system-ui, -apple-system, sans-serif",
+            font: "600 32px sans-serif",
             fillColor: Cesium.Color.fromCssColorString("#0b1220"),
             style: Cesium.LabelStyle.FILL_AND_OUTLINE,
             outlineColor: Cesium.Color.WHITE,
@@ -1333,7 +1316,7 @@ export function useCesiumViewer({
             },
             label: {
               text: threat.name,
-              font: "600 26px 'Inter', system-ui, -apple-system, sans-serif",
+              font: "600 26px sans-serif",
               fillColor: Cesium.Color.fromCssColorString(textHex),
               outlineColor: Cesium.Color.WHITE,
               outlineWidth: 4,
@@ -1686,7 +1669,7 @@ export function useCesiumViewer({
         position: Cesium.Cartesian3.fromDegrees(node.lon, node.lat, labelAlt),
         label: {
           text: node.name,
-          font: "600 36px 'Inter', system-ui, -apple-system, sans-serif",
+          font: "600 36px sans-serif",
           fillColor: Cesium.Color.fromCssColorString("#0b1220"),
           style: Cesium.LabelStyle.FILL_AND_OUTLINE,
           outlineColor: Cesium.Color.WHITE,
@@ -1706,7 +1689,7 @@ export function useCesiumViewer({
         position: Cesium.Cartesian3.fromDegrees(node.lon, node.lat, labelAlt),
         label: {
           text: `${node.id} · ${node.lat.toFixed(4)}°N · ${node.lon.toFixed(4)}°E`,
-          font: "500 22px 'JetBrains Mono', ui-monospace, 'SF Mono', sans-serif",
+          font: "500 22px monospace",
           fillColor: Cesium.Color.fromCssColorString("#8a94a6"),
           style: Cesium.LabelStyle.FILL_AND_OUTLINE,
           outlineColor: Cesium.Color.WHITE,
@@ -1813,7 +1796,7 @@ export function useCesiumViewer({
         position: Cesium.Cartesian3.fromDegrees(midLon, midLat, midAlt),
         label: {
           text: ` ${sentenceCase(rel.label)} `,
-          font: "500 10px 'Inter', system-ui, -apple-system, sans-serif",
+          font: "500 10px sans-serif",
           fillColor: Cesium.Color.fromCssColorString(textHex),
           style: Cesium.LabelStyle.FILL,
           showBackground: true,
@@ -2090,7 +2073,7 @@ export function useCesiumViewer({
           },
           label: {
             text: ` Stalowa Wola · ${totalObjects} obiektów `,
-            font: "500 12px 'Inter', system-ui, -apple-system, sans-serif",
+            font: "500 12px sans-serif",
             fillColor: Cesium.Color.fromCssColorString("#0b1220"),
             style: Cesium.LabelStyle.FILL,
             showBackground: true,
