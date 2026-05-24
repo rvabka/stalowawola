@@ -67,6 +67,92 @@ function makeBadgeImage(color: string, label: string, sizePx = 96): string {
   return url;
 }
 
+// Same cache pattern for text-label PNGs. Cesium SDF labels produce shader artifacts
+// (white-noise glyph atlas) on some GPU/driver combos in production; rendering text into
+// a canvas and serving it as a billboard image bypasses SDF entirely.
+const _textLabelCache: Record<string, string> = {};
+
+type TextLabelOpts = {
+  fontSize?: number;
+  fontWeight?: number;
+  fontFamily?: string;
+  fillColor?: string;
+  bg?: string | null;
+  strokeColor?: string | null;
+  strokeWidth?: number;
+  paddingX?: number;
+  paddingY?: number;
+  radius?: number;
+};
+
+function makeTextLabelImage(text: string, opts: TextLabelOpts = {}): string {
+  const {
+    fontSize = 36,
+    fontWeight = 600,
+    fontFamily = "sans-serif",
+    fillColor = "#0b1220",
+    bg = null,
+    strokeColor = "rgba(255,255,255,0.95)",
+    strokeWidth = 4,
+    paddingX = 14,
+    paddingY = 7,
+    radius = 8,
+  } = opts;
+  const key = `${text}|${fontSize}|${fontWeight}|${fontFamily}|${fillColor}|${bg}|${strokeColor}|${strokeWidth}|${paddingX}|${paddingY}|${radius}`;
+  if (_textLabelCache[key]) return _textLabelCache[key];
+  if (typeof document === "undefined") return "";
+
+  const measure = document.createElement("canvas").getContext("2d");
+  if (!measure) return "";
+  const fontSpec = `${fontWeight} ${fontSize}px ${fontFamily}`;
+  measure.font = fontSpec;
+  const lines = text.split("\n");
+  const lineH = Math.ceil(fontSize * 1.25);
+  const textW = lines.reduce((m, l) => Math.max(m, Math.ceil(measure.measureText(l).width)), 0);
+  const textH = lineH * lines.length;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = textW + paddingX * 2 + strokeWidth * 2;
+  canvas.height = textH + paddingY * 2 + strokeWidth * 2;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+
+  if (bg) {
+    ctx.fillStyle = bg;
+    const r = Math.min(radius, canvas.height / 2);
+    ctx.beginPath();
+    if (typeof (ctx as any).roundRect === "function") {
+      (ctx as any).roundRect(0, 0, canvas.width, canvas.height, r);
+    } else {
+      ctx.rect(0, 0, canvas.width, canvas.height);
+    }
+    ctx.fill();
+  }
+
+  ctx.font = fontSpec;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const cx = canvas.width / 2;
+  const startY = canvas.height / 2 - ((lines.length - 1) * lineH) / 2;
+
+  lines.forEach((line, i) => {
+    const y = startY + i * lineH;
+    if (strokeColor && strokeWidth > 0) {
+      ctx.lineWidth = strokeWidth;
+      ctx.strokeStyle = strokeColor;
+      ctx.lineJoin = "round";
+      ctx.miterLimit = 2;
+      ctx.strokeText(line, cx, y);
+    }
+    ctx.fillStyle = fillColor;
+    ctx.fillText(line, cx, y);
+  });
+
+  const url = canvas.toDataURL("image/png");
+  _textLabelCache[key] = url;
+  return url;
+}
+
 interface MapLayersState {
   baseMap: boolean;
   nodes: boolean;
@@ -286,16 +372,11 @@ export function useCesiumViewer({
     viewer.entities.add({
       id: "sys_reloc_ghost_label",
       position: Cesium.Cartesian3.fromDegrees(sys.lon, sys.lat, GROUND_ALT + 120),
-      label: {
-        text: "Nowa pozycja baterii\nPrzesuń kursorem",
-        font: "500 28px sans-serif",
-        fillColor: Cesium.Color.fromCssColorString("#0b1220"),
-        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-        outlineColor: Cesium.Color.WHITE,
-        outlineWidth: 2,
-        showBackground: false,
+      billboard: {
+        image: makeTextLabelImage("Nowa pozycja baterii\nPrzesuń kursorem", { fontSize: 28, fontWeight: 500 }),
         scale: 0.4,
         verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         disableDepthTestDistance: Number.POSITIVE_INFINITY
       }
     });
@@ -491,16 +572,14 @@ export function useCesiumViewer({
     viewer.entities.add({
       id: "sys_deploy_preview_label",
       position: Cesium.Cartesian3.fromDegrees(lon0, lat0, GROUND_ALT + labelHeight),
-      label: {
-        text: `${weapon.name}\nZasięg ${(weapon.range / 1000).toFixed(1)} km\n${lat0.toFixed(4)}°N · ${lon0.toFixed(4)}°E\nKliknij, aby rozstawić`,
-        font: "500 28px sans-serif",
-        fillColor: Cesium.Color.fromCssColorString("#0b1220"),
-        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-        outlineColor: Cesium.Color.WHITE,
-        outlineWidth: 2,
-        showBackground: false,
+      billboard: {
+        image: makeTextLabelImage(
+          `${weapon.name}\nZasięg ${(weapon.range / 1000).toFixed(1)} km\n${lat0.toFixed(4)}°N · ${lon0.toFixed(4)}°E\nKliknij, aby rozstawić`,
+          { fontSize: 28, fontWeight: 500 }
+        ),
         scale: 0.4,
         verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         pixelOffset: new Cesium.Cartesian2(0, -8),
         disableDepthTestDistance: Number.POSITIVE_INFINITY
       }
@@ -680,16 +759,14 @@ export function useCesiumViewer({
     viewer.entities.add({
       id: sys.id + "_label",
       position: Cesium.Cartesian3.fromDegrees(lon, lat, GROUND_ALT + labelHeight),
-      label: {
-        text: sys.name + (isRelocating ? ` · marsz ${sys.relocationSecondsLeft}s` : ""),
-        font: "600 32px sans-serif",
-        fillColor: Cesium.Color.fromCssColorString(isRelocating ? "#d97706" : "#0b1220"),
-        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-        outlineColor: Cesium.Color.WHITE,
-        outlineWidth: 2,
-        showBackground: false,
+      billboard: {
+        image: makeTextLabelImage(
+          sys.name + (isRelocating ? ` · marsz ${sys.relocationSecondsLeft}s` : ""),
+          { fontSize: 32, fontWeight: 600, fillColor: isRelocating ? "#d97706" : "#0b1220" }
+        ),
         scale: 0.34,
         verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         pixelOffset: new Cesium.Cartesian2(0, -10),
         disableDepthTestDistance: Number.POSITIVE_INFINITY
       }
@@ -907,7 +984,10 @@ export function useCesiumViewer({
           const ghostLabel = viewer.entities.getById("sys_reloc_ghost_label");
           if (ghostLabel) {
             ghostLabel.position = Cesium.Cartesian3.fromDegrees(lon, lat, GROUND_ALT + 120);
-            ghostLabel.label.text = `Nowa pozycja\n${lat.toFixed(4)}°N · ${lon.toFixed(4)}°E\nKliknij, aby zatwierdzić`;
+            ghostLabel.billboard.image = makeTextLabelImage(
+              `Nowa pozycja\n${lat.toFixed(4)}°N · ${lon.toFixed(4)}°E\nKliknij, aby zatwierdzić`,
+              { fontSize: 28, fontWeight: 500 }
+            );
           }
         }
 
@@ -932,7 +1012,10 @@ export function useCesiumViewer({
           if (previewLabel && weapon) {
             const labelHeight = previewState.type === "PATRIOT" ? 130 : previewState.type === "PILICA" ? 110 : 80;
             previewLabel.position = Cesium.Cartesian3.fromDegrees(lon, lat, GROUND_ALT + labelHeight);
-            previewLabel.label.text = `${weapon.name}\nZasięg ${(weapon.range / 1000).toFixed(1)} km\n${lat.toFixed(4)}°N · ${lon.toFixed(4)}°E\nKliknij, aby rozstawić`;
+            previewLabel.billboard.image = makeTextLabelImage(
+              `${weapon.name}\nZasięg ${(weapon.range / 1000).toFixed(1)} km\n${lat.toFixed(4)}°N · ${lon.toFixed(4)}°E\nKliknij, aby rozstawić`,
+              { fontSize: 28, fontWeight: 500 }
+            );
           }
         }
       }
@@ -1197,16 +1280,11 @@ export function useCesiumViewer({
         viewer.entities.add({
           id: newSys.id + "_label",
           position: Cesium.Cartesian3.fromDegrees(lon, lat, GROUND_ALT + labelHeight),
-          label: {
-            text: newSys.name,
-            font: "600 32px sans-serif",
-            fillColor: Cesium.Color.fromCssColorString("#0b1220"),
-            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-            outlineColor: Cesium.Color.WHITE,
-            outlineWidth: 5,
-            showBackground: false,
+          billboard: {
+            image: makeTextLabelImage(newSys.name, { fontSize: 32, fontWeight: 600 }),
             scale: 0.34,
             verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
             pixelOffset: new Cesium.Cartesian2(0, -10),
             disableDepthTestDistance: Number.POSITIVE_INFINITY
           }
@@ -1314,15 +1392,11 @@ export function useCesiumViewer({
               silhouetteColor: Cesium.Color.fromCssColorString(trailHex),
               silhouetteSize: 1.5
             },
-            label: {
-              text: threat.name,
-              font: "600 26px sans-serif",
-              fillColor: Cesium.Color.fromCssColorString(textHex),
-              outlineColor: Cesium.Color.WHITE,
-              outlineWidth: 2,
-              style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+            billboard: {
+              image: makeTextLabelImage(threat.name, { fontSize: 26, fontWeight: 600, fillColor: textHex }),
               scale: 0.36,
               verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+              horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
               pixelOffset: new Cesium.Cartesian2(0, -22),
               disableDepthTestDistance: Number.POSITIVE_INFINITY
             }
@@ -1667,16 +1741,11 @@ export function useCesiumViewer({
       const labelAlt = GROUND_ALT + shape.topZ + (shape.antenna || 0) + 18;
       const labelEntity = viewer.entities.add({
         position: Cesium.Cartesian3.fromDegrees(node.lon, node.lat, labelAlt),
-        label: {
-          text: node.name,
-          font: "600 36px sans-serif",
-          fillColor: Cesium.Color.fromCssColorString("#0b1220"),
-          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-          outlineColor: Cesium.Color.WHITE,
-          outlineWidth: 6,
-          showBackground: false,
+        billboard: {
+          image: makeTextLabelImage(node.name, { fontSize: 36, fontWeight: 600 }),
           scale: 0.34,
           verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
           pixelOffset: new Cesium.Cartesian2(0, -42),
           disableDepthTestDistance: Number.POSITIVE_INFINITY
         },
@@ -1687,16 +1756,14 @@ export function useCesiumViewer({
       // 5. Muted callsign · GPS — only at close zoom (≤ 2500 m) to reduce clutter.
       const coordLabel = viewer.entities.add({
         position: Cesium.Cartesian3.fromDegrees(node.lon, node.lat, labelAlt),
-        label: {
-          text: `${node.id} · ${node.lat.toFixed(4)}°N · ${node.lon.toFixed(4)}°E`,
-          font: "500 22px monospace",
-          fillColor: Cesium.Color.fromCssColorString("#8a94a6"),
-          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-          outlineColor: Cesium.Color.WHITE,
-          outlineWidth: 4,
-          showBackground: false,
+        billboard: {
+          image: makeTextLabelImage(
+            `${node.id} · ${node.lat.toFixed(4)}°N · ${node.lon.toFixed(4)}°E`,
+            { fontSize: 22, fontWeight: 500, fontFamily: "monospace", fillColor: "#8a94a6" }
+          ),
           scale: 0.34,
           verticalOrigin: Cesium.VerticalOrigin.TOP,
+          horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
           pixelOffset: new Cesium.Cartesian2(0, 8),
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
           distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 2500)
@@ -1794,16 +1861,21 @@ export function useCesiumViewer({
       // Pill label — only at close zoom (≤ 3500 m) to keep the wider view uncluttered.
       const peakLabelEntity = viewer.entities.add({
         position: Cesium.Cartesian3.fromDegrees(midLon, midLat, midAlt),
-        label: {
-          text: ` ${sentenceCase(rel.label)} `,
-          font: "500 10px sans-serif",
-          fillColor: Cesium.Color.fromCssColorString(textHex),
-          style: Cesium.LabelStyle.FILL,
-          showBackground: true,
-          backgroundColor: Cesium.Color.WHITE.withAlpha(0.92),
-          backgroundPadding: new Cesium.Cartesian2(6, 4),
-          scale: 1.0,
+        billboard: {
+          image: makeTextLabelImage(sentenceCase(rel.label), {
+            fontSize: 20,
+            fontWeight: 500,
+            fillColor: textHex,
+            bg: "rgba(255,255,255,0.92)",
+            strokeColor: null,
+            strokeWidth: 0,
+            paddingX: 10,
+            paddingY: 6,
+            radius: 10
+          }),
+          scale: 0.5,
           verticalOrigin: Cesium.VerticalOrigin.CENTER,
+          horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
           pixelOffset: new Cesium.Cartesian2(0, 0),
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
           distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 3500)
@@ -2071,16 +2143,20 @@ export function useCesiumViewer({
             outlineWidth: 2,
             disableDepthTestDistance: Number.POSITIVE_INFINITY
           },
-          label: {
-            text: ` Stalowa Wola · ${totalObjects} obiektów `,
-            font: "500 12px sans-serif",
-            fillColor: Cesium.Color.fromCssColorString("#0b1220"),
-            style: Cesium.LabelStyle.FILL,
-            showBackground: true,
-            backgroundColor: Cesium.Color.WHITE.withAlpha(0.94),
-            backgroundPadding: new Cesium.Cartesian2(10, 6),
-            scale: 1.0,
+          billboard: {
+            image: makeTextLabelImage(`Stalowa Wola · ${totalObjects} obiektów`, {
+              fontSize: 24,
+              fontWeight: 500,
+              bg: "rgba(255,255,255,0.94)",
+              strokeColor: null,
+              strokeWidth: 0,
+              paddingX: 14,
+              paddingY: 8,
+              radius: 12
+            }),
+            scale: 0.5,
             verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
             pixelOffset: new Cesium.Cartesian2(0, -18),
             disableDepthTestDistance: Number.POSITIVE_INFINITY
           }
@@ -2088,7 +2164,10 @@ export function useCesiumViewer({
         clusterEntityRef.current = cluster;
       } else {
         // Update count dynamically
-        clusterEntityRef.current.label.text = ` Stalowa Wola · ${totalObjects} obiektów `;
+        clusterEntityRef.current.billboard.image = makeTextLabelImage(
+          `Stalowa Wola · ${totalObjects} obiektów`,
+          { fontSize: 24, fontWeight: 500, bg: "rgba(255,255,255,0.94)", strokeColor: null, strokeWidth: 0, paddingX: 14, paddingY: 8, radius: 12 }
+        );
         clusterEntityRef.current.show = true;
       }
     } else {
