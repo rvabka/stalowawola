@@ -881,11 +881,7 @@ export default function LandingPage() {
       const el = document.getElementById(href.slice(1));
       if (!el) return;
       e.preventDefault();
-      const scroller =
-        (document.scrollingElement as HTMLElement | null) ||
-        (document.body.scrollHeight > document.body.clientHeight ? document.body : document.documentElement);
-      const top = el.getBoundingClientRect().top + scroller.scrollTop - 80;
-      scroller.scrollTo({ top, behavior: "smooth" });
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
       history.replaceState(null, "", href);
     };
     document.addEventListener("click", onClick);

@@ -132,13 +132,14 @@
 
 html, body { height: 100%; }
 
-html {
+html, body {
   scroll-behavior: smooth;
   scroll-padding-top: 80px;
 }
 @media (prefers-reduced-motion: reduce) {
-  html { scroll-behavior: auto; }
+  html, body { scroll-behavior: auto; }
 }
+section[id] { scroll-margin-top: 80px; }
 
 body {
   background: var(--canvas-gradient);
