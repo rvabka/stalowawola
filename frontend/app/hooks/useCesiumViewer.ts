@@ -699,12 +699,33 @@ export function useCesiumViewer({
   }, [mapLayers.domes]);
 
   useEffect(() => {
-    const Cesium = (window as any).Cesium;
-    if (!Cesium || !containerRef.current) return;
+    let cancelled = false;
+    let cleanup: (() => void) | null = null;
 
-    // Authenticate against Cesium ion BEFORE constructing the viewer so any
-    // ion-backed asset request (3D Tiles, terrain, imagery) carries the token.
-    const ionToken = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN;
+    const initialize = async () => {
+      // Cesium rasterizes label text into SDF atlases at first draw. If "Inter" / "JetBrains Mono"
+      // haven't loaded yet, the atlas is built from fallback glyphs (or empty boxes) and never
+      // regenerates — labels appear as visual noise on production where Cesium init outpaces
+      // the Google Fonts CSS roundtrip.
+      if (typeof document !== "undefined" && (document as any).fonts?.load) {
+        try {
+          await Promise.all([
+            (document as any).fonts.load("500 28px Inter"),
+            (document as any).fonts.load("600 32px Inter"),
+            (document as any).fonts.load("500 22px 'JetBrains Mono'"),
+          ]);
+        } catch {
+          // fonts failed to load — proceed with system fallback
+        }
+      }
+      if (cancelled) return;
+
+      const Cesium = (window as any).Cesium;
+      if (!Cesium || !containerRef.current) return;
+
+      // Authenticate against Cesium ion BEFORE constructing the viewer so any
+      // ion-backed asset request (3D Tiles, terrain, imagery) carries the token.
+      const ionToken = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN;
     if (ionToken && Cesium.Ion?.defaultAccessToken !== undefined) {
       Cesium.Ion.defaultAccessToken = ionToken;
     }
@@ -1219,7 +1240,7 @@ export function useCesiumViewer({
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-    let animationFrameId: number;
+    let animationFrameId = 0;
 
     const tick = () => {
       animationFrameId = requestAnimationFrame(tick);
@@ -1505,10 +1526,24 @@ export function useCesiumViewer({
 
     tick();
 
+      if (cancelled) {
+        cancelAnimationFrame(animationFrameId);
+        handler.destroy();
+        viewer.destroy();
+        return;
+      }
+      cleanup = () => {
+        cancelAnimationFrame(animationFrameId);
+        handler.destroy();
+        viewer.destroy();
+      };
+    };
+
+    initialize();
+
     return () => {
-      cancelAnimationFrame(animationFrameId);
-      handler.destroy();
-      viewer.destroy();
+      cancelled = true;
+      cleanup?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
