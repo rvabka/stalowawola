@@ -132,6 +132,14 @@
 
 html, body { height: 100%; }
 
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 80px;
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
+
 body {
   background: var(--canvas-gradient);
   color: var(--text-1);

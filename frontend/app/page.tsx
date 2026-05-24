@@ -1,1019 +1,887 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { CriticalNode, DeployedSystem, Threat, LogEntry, HoveredCoords, WeaponType, SimState, NodeRelation } from "./types";
-import { INITIAL_NODES, INITIAL_RELATIONS, CENTER_LAT, CENTER_LON } from "./data/nodes";
-import { WEAPONS } from "./data/weapons";
-import { THREAT_TYPES } from "./data/threats";
-import { useAudio } from "./hooks/useAudio";
-import { useCascadingEngine } from "./hooks/useCascadingEngine";
-import { useDefcon } from "./hooks/useDefcon";
-import { useCesiumViewer } from "./hooks/useCesiumViewer";
-import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import { Header } from "./components/Header";
-import { AlertTicker } from "./components/AlertTicker";
-import { CesiumViewport } from "./components/CesiumViewport";
-import { LeftSidebar } from "./components/LeftSidebar";
-import { ScenariosPanel } from "./components/ScenariosPanel";
-import { ArsenalPanel } from "./components/ArsenalPanel";
-import { ThreatMonitor } from "./components/ThreatMonitor";
-import { CommandLogger } from "./components/CommandLogger";
-import { TelemetryHUD } from "./components/TelemetryHUD";
-import { ObjectDetailCard } from "./components/ObjectDetailCard";
-import { DependencyFlow } from "./components/DependencyFlow";
-import { ThreatModelViewer } from "./components/ThreatModelViewer";
-import { DefconOverlay } from "./components/DefconOverlay";
-import { StrategPanel } from "./components/StrategPanel";
-import { Coachmark } from "./ui/Coachmark";
-import { Button } from "./ui/Button";
-import { Dialog } from "./ui/Dialog";
-import type { TacticalSnapshot, Assessment } from "./strateg/schemas";
-import { captureCesiumScreenshot, drawStrategOverlays, clearStrategOverlays } from "./strateg/overlays";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import {
+  ArrowRight,
+  ArrowUpRight,
+  Sparkles,
+  Play,
+  ShieldCheck,
+  ChevronRight
+} from "lucide-react";
 
-export default function SteelSentinelDashboard() {
-  const [nodes, setNodes] = useState<CriticalNode[]>(INITIAL_NODES);
-  const [relations, setRelations] = useState<NodeRelation[]>(INITIAL_RELATIONS);
-  const [deployedSystems, setDeployedSystems] = useState<DeployedSystem[]>([]);
-  const [selectedWeapon, setSelectedWeapon] = useState<WeaponType | null>(null);
-  const [threats, setThreats] = useState<Threat[]>([]);
-  const [logs, setLogs] = useState<LogEntry[]>([
-    { timestamp: "16:30:00", text: "SYSTEM DOWODZENIA STEEL SENTINEL ZAINICJOWANY", type: "info" },
-    { timestamp: "16:30:02", text: "PŁASZCZYZNA TAKTYCZNA CESIUM JS: WCZYTANO CYFROWY BLIŹNIAK STALOWA WOLA", type: "info" },
-    { timestamp: "16:30:04", text: "LOGIKA KASKADOWA: WĘZŁY INFRASTRUKTURY SKONFIGUROWANE (STATUS: 100%)", type: "success" }
-  ]);
-  const [defcon, setDefcon] = useState<number>(5);
-  const [simSpeed, setSimSpeed] = useState<number>(1);
-  const [playbookActive, setPlaybookActive] = useState<string | null>(null);
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(false);
-  const [clockTime, setClockTime] = useState<string>("");
-  const [hoveredCoords, setHoveredCoords] = useState<HoveredCoords>({
-    lat: CENTER_LAT, lon: CENTER_LON, alt: 145, az: 0
-  });
-  const [coolingSecondsLeft, setCoolingSecondsLeft] = useState<number | null>(null);
-  const [waterSecondsLeft, setWaterSecondsLeft] = useState<number | null>(null);
-
-  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
-  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
-  const [radarCollapsed, setRadarCollapsed] = useState(true);
-  const [loggerCollapsed, setLoggerCollapsed] = useState(true);
-  const [schemaModeEnabled, setSchemaModeEnabled] = useState(false);
-  const [threatViewerOpen, setThreatViewerOpen] = useState(false);
-  const [strategOpen, setStrategOpen] = useState(false);
-  const [theme, setTheme] = useState<"light" | "dark">("light");
-  const [baseMapType, setBaseMapType] = useState<"standard" | "satellite" | "topo">("satellite");
-  const [sceneMode, setSceneMode] = useState<"3d" | "2d">("3d");
-
-  useEffect(() => {
-    const savedType = localStorage.getItem("steel-sentinel-basemap") as any;
-    if (savedType === "standard" || savedType === "satellite" || savedType === "topo") {
-      setBaseMapType(savedType);
-    }
-    const savedScene = localStorage.getItem("steel-sentinel-scenemode");
-    if (savedScene === "2d" || savedScene === "3d") {
-      setSceneMode(savedScene);
-    }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem("steel-sentinel-basemap", baseMapType);
-  }, [baseMapType]);
-
-  useEffect(() => {
-    localStorage.setItem("steel-sentinel-scenemode", sceneMode);
-  }, [sceneMode]);
-  const [mapLayers, setMapLayers] = useState({
-    baseMap: true,
-    nodes: true,
-    relations: true,
-    domes: true,
-    threats: true,
-    tacticalZones: true,
-    hydrology: true,
-    effects: true
-  });
-
-  const handleToggleLayer = useCallback((key: keyof typeof mapLayers) => {
-    setMapLayers((prev) => ({
-      ...prev,
-      [key]: !prev[key]
-    }));
-  }, []);
-
-  // Sync theme on mount
-  useEffect(() => {
-    const savedTheme = localStorage.getItem("steel-sentinel-theme") as "light" | "dark" | null;
-    if (savedTheme) {
-      setTheme(savedTheme);
-    }
-  }, []);
-
-  // Update theme class and save to localStorage
-  useEffect(() => {
-    if (theme === "dark") {
-      document.body.classList.add("dark");
-    } else {
-      document.body.classList.remove("dark");
-    }
-    localStorage.setItem("steel-sentinel-theme", theme);
-  }, [theme]);
-
-  // Load nodes and relations from localStorage on client mount
-  // Bumped to v2 after node coordinates were re-anchored to real Stalowa Wola GPS
-  // (Tauron, HSW, Most Bora-Komorowskiego). Old v1 cache is discarded.
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("sentinel_nodes");      // discard stale v1 cache
-      localStorage.removeItem("sentinel_relations");
-      const savedNodes = localStorage.getItem("sentinel_nodes_v2");
-      if (savedNodes) {
-        try {
-          setNodes(JSON.parse(savedNodes));
-        } catch (e) {
-          console.error("Failed to parse saved nodes:", e);
-        }
-      }
-      const savedRelations = localStorage.getItem("sentinel_relations_v2");
-      if (savedRelations) {
-        try {
-          setRelations(JSON.parse(savedRelations));
-        } catch (e) {
-          console.error("Failed to parse saved relations:", e);
-        }
-      }
-    }
-  }, []);
-
-  // Save nodes to localStorage on update
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("sentinel_nodes_v2", JSON.stringify(nodes));
-    }
-  }, [nodes]);
-
-  // Save relations to localStorage on update
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("sentinel_relations_v2", JSON.stringify(relations));
-    }
-  }, [relations]);
-
-  const [selectedNode, setSelectedNode] = useState<CriticalNode | null>(null);
-  const [selectedSystem, setSelectedSystem] = useState<DeployedSystem | null>(null);
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
-  const [isRelocationDragging, setIsRelocationDragging] = useState(false);
-  const [relocationConfirmation, setRelocationConfirmation] = useState<{
-    sysId: string;
-    lat: number;
-    lon: number;
-    distance: number;
-    seconds: number;
-    realTime: string;
-  } | null>(null);
-
-  const cesiumContainerRef = useRef<HTMLDivElement>(null);
-
-  const simStateRef = useRef<SimState>({
-    deployedSystems, threats, simSpeed, nodes, selectedWeapon
-  });
-
-  useEffect(() => {
-    simStateRef.current = { deployedSystems, threats, simSpeed, nodes, selectedWeapon };
-  }, [deployedSystems, threats, simSpeed, nodes, selectedWeapon]);
-
-  useEffect(() => {
-    setClockTime(new Date().toTimeString().split(" ")[0]);
-    const timer = setInterval(() => {
-      setClockTime(new Date().toTimeString().split(" ")[0]);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const { playBeep } = useAudio(soundEnabled);
-
-  const addLog = useCallback((text: string, type: LogEntry["type"] = "info") => {
-    const now = new Date();
-    const timestamp = now.toTimeString().split(" ")[0];
-    setLogs((prev) => {
-      const next = [...prev, { timestamp, text, type }];
-      if (next.length > 35) next.shift();
-      return next;
-    });
-    if (type === "error") {
-      playBeep(220, "sawtooth", 0.35);
-      setTimeout(() => playBeep(180, "sawtooth", 0.25), 120);
-    } else if (type === "warning") {
-      playBeep(350, "sine", 0.2);
-    } else if (type === "combat") {
-      playBeep(880, "triangle", 0.08);
-    } else if (type === "success") {
-      playBeep(520, "sine", 0.15);
-    } else {
-      playBeep(440, "sine", 0.04);
-    }
-  }, [playBeep]);
-
-  // Distance helper
-  const calculateDistanceKm = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-    const R = 6371;
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLon = ((lon2 - lon1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  };
-
-  // Format real travel time assuming tactical convoy speeds
-  const formatRealTime = (distanceKm: number, type: string) => {
-    // patriot moves at 40km/h (heavy), pilica at 60km/h (medium), radar at 50km/h
-    const speedKmh = type === "PATRIOT" ? 40 : type === "PILICA" ? 60 : 50;
-    const hours = distanceKm / speedKmh;
-    const totalSeconds = Math.round(hours * 3600);
-    
-    if (totalSeconds < 60) {
-      return `${totalSeconds} sek.`;
-    }
-    const minutes = Math.floor(totalSeconds / 60);
-    const remainingSeconds = totalSeconds % 60;
-    if (minutes < 60) {
-      return `${minutes} min. ${remainingSeconds} sek.`;
-    }
-    const remainingMinutes = minutes % 60;
-    const finalHours = Math.floor(minutes / 60);
-    return `${finalHours} godz. ${remainingMinutes} min.`;
-  };
-
-  const handleConfirmRelocationPosition = useCallback((sysId: string, lat: number, lon: number) => {
-    const matched = deployedSystems.find(s => s.id === sysId);
-    if (!matched) return;
-
-    const distance = calculateDistanceKm(matched.lat, matched.lon, lat, lon);
-    const realTime = formatRealTime(distance, matched.type);
-    // Demo mode: Force the actual simulation relocation countdown to exactly 5 seconds
-    const seconds = 5;
-
-    setRelocationConfirmation({
-      sysId,
-      lat,
-      lon,
-      distance,
-      seconds,
-      realTime
-    });
-  }, [deployedSystems]);
-
-  const {
-    viewerRef,
-    nodeEntitiesRef,
-    flyToNode,
-    resetViewer,
-    removeDeployedSystem,
-    drawDeployedSystem,
-    startRelocationDrag,
-    cancelRelocationDrag
-  } = useCesiumViewer({
-    containerRef: cesiumContainerRef,
-    simStateRef,
-    centerLat: CENTER_LAT,
-    centerLon: CENTER_LON,
-    onAddLog: addLog,
-    setDeployedSystems,
-    setThreats,
-    setNodes,
-    setSelectedWeapon: (val) => setSelectedWeapon(val as WeaponType | null),
-    setHoveredCoords,
-    setSelectedNode,
-    setSelectedSystem,
-    theme,
-    mapLayers,
-    nodes,
-    relations,
-    baseMapType,
-    sceneMode,
-    onConfirmRelocationPosition: handleConfirmRelocationPosition,
-    effectsEnabled: mapLayers.effects,
-    selectedWeapon
-  });
-
-  useEffect(() => {
-    if (viewerRef.current) {
-      const timeout = setTimeout(() => {
-        viewerRef.current.resize();
-      }, 500);
-      return () => clearTimeout(timeout);
-    }
-  }, [schemaModeEnabled, viewerRef]);
-
-  useCascadingEngine(
-    nodes, setNodes, simSpeed,
-    coolingSecondsLeft, setCoolingSecondsLeft,
-    waterSecondsLeft, setWaterSecondsLeft,
-    addLog, nodeEntitiesRef
-  );
-
-  useDefcon(threats, nodes, deployedSystems.length, defcon, setDefcon, addLog);
-
-  const spawnThreat = useCallback((type: "DRONE" | "SHAHED" | "MISSILE", targetId: string) => {
-    const tConfig = THREAT_TYPES[type];
-    const target = nodes.find(n => n.id === targetId);
-    if (!target) return;
-
-    const startLat = CENTER_LAT - 0.04 + Math.random() * 0.08;
-    const startLon = CENTER_LON + 0.08;
-    const threatId = `THR_${Date.now()}_${Math.floor(Math.random() * 100)}`;
-    const newThreat: Threat = {
-      id: threatId,
-      type,
-      name: `${type === "MISSILE" ? "RAKIETA" : type === "SHAHED" ? "SHAHED" : "DRON"} #${threatId.slice(-3)}`,
-      startLat, startLon,
-      lat: startLat, lon: startLon,
-      alt: tConfig.alt,
-      targetId,
-      pathType: type === "SHAHED" ? "RIVER" : "DIRECT",
-      progress: 0,
-      status: "FLYING",
-      health: 100
-    };
-    setThreats((prev) => [...prev, newThreat]);
-    addLog(`WYKRYTO ECHO RADAROWE: Zbliża się ${newThreat.name} ➡️ Cel: ${target.name}!`, "error");
-    playBeep(580, "sawtooth", 0.3);
-  }, [nodes, addLog, playBeep]);
-
-  const launchScenario = useCallback((index: number) => {
-    if (index === 1) {
-      addLog("ROZPOCZĘTO SCENARIUSZ: Swarm of commercial recon drones on HSW & GPZ.", "warning");
-      spawnThreat("DRONE", "OBJ_01");
-      setTimeout(() => spawnThreat("DRONE", "OBJ_04"), 1500);
-      setTimeout(() => spawnThreat("DRONE", "OBJ_03"), 3000);
-    } else if (index === 2) {
-      addLog("ROZPOCZĘTO SCENARIUSZ: Amunicja Shahed-136 ukrywa się w korycie Sanu.", "warning");
-      spawnThreat("SHAHED", "OBJ_02");
-      setTimeout(() => spawnThreat("SHAHED", "OBJ_06"), 2000);
-    } else if (index === 3) {
-      addLog("ROZPOCZĘTO SCENARIUSZ: Taktyczny pocisk rakietowy zmierza w kierunku HSW S.A.", "warning");
-      spawnThreat("MISSILE", "OBJ_01");
-    } else if (index === 4) {
-      addLog("ROZPOCZĘTO SCENARIUSZ: Zmasowany nalot saturacyjny na sieć energetyczną.", "warning");
-      spawnThreat("MISSILE", "OBJ_02");
-      setTimeout(() => spawnThreat("SHAHED", "OBJ_04"), 2000);
-      setTimeout(() => spawnThreat("DRONE", "OBJ_03"), 3500);
-    }
-  }, [addLog, spawnThreat]);
-
-  const activatePlaybook = useCallback((id: string, name: string) => {
-    setPlaybookActive(id);
-    addLog(`DOWÓDZTWO: Uruchomiono alarmową procedurę ${name}`, "success");
-    if (id === "ALERT_SMS") {
-      addLog("RCB BROADCAST: Rozesłano kryzysowy komunikat SMS do mieszkańców powiatu Stalowa Wola.", "info");
-      playBeep(480, "sine", 0.5);
-    } else if (id === "SIREN") {
-      addLog("OBRONA CYWILNA: Miejskie syreny akustyczne nadają sygnał alarmowy modulowany (Zagrożenie napowietrzne).", "warning");
-      playBeep(320, "sawtooth", 1.2);
-    } else if (id === "BACKUP_GEN") {
-      addLog("SIECI ROZDZIELCZE: Wymuszono załączenie rezerwowych agregatów we wszystkich 7 obiektach.", "success");
-      setNodes(prev => prev.map(n => ({
-        ...n,
-        backupPower: true,
-        notes: n.notes + " (Generatory aktywowane ręcznie z sztabu)"
-      })));
-    }
-  }, [addLog, playBeep]);
-
-  const handleReset = useCallback(() => {
-    setNodes(INITIAL_NODES.map(n => ({ ...n })));
-    setDeployedSystems([]);
-    setThreats([]);
-    setSelectedWeapon(null);
-    setPlaybookActive(null);
-    setCoolingSecondsLeft(null);
-    setWaterSecondsLeft(null);
-    setSelectedNode(null);
-    setSelectedSystem(null);
-    resetViewer();
-    addLog("ZRESETOWANO SYSTEM I PRZESTRZEŃ TAKTYCZNĄ. OBIEKTY PRZYWRÓCONE DO SPRAWNOŚCI.", "success");
-  }, [resetViewer, addLog]);
-
-  const handleNodeClick = useCallback((node: CriticalNode) => {
-    setSelectedNode(node);
-    setSelectedSystem(null);
-    flyToNode(node.lat, node.lon, node.name);
-  }, [flyToNode]);
-
-  const handleAddNode = useCallback((newNode: CriticalNode) => {
-    setNodes((prev) => [...prev, newNode]);
-    addLog(`DODANO NOWY WĘZEŁ STRATEGICZNY: ${newNode.name.toUpperCase()} [ID: ${newNode.id}]`, "success");
-  }, [addLog]);
-
-  const handleAddRelation = useCallback((newRel: NodeRelation) => {
-    setRelations((prev) => [...prev, newRel]);
-    addLog(`POWIĄZANIE SYSTEMOWE: Utworzono relację przepływu ${newRel.source} -> ${newRel.target} [${newRel.label}]`, "success");
-  }, [addLog]);
-
-  const handleActivateBackupPower = useCallback((nodeId: string) => {
-    addLog(`SIECI ROZDZIELCZE: Ręczne załączenie agregatu rezerwowego dla węzła ${nodeId}.`, "success");
-    setNodes((prev) =>
-      prev.map((n) =>
-        n.id === nodeId
-          ? { ...n, backupPower: true, notes: n.notes + " (Awaryjny generator załączony lokalnie z konsoli obiektu)" }
-          : n
-      )
-    );
-    setSelectedNode((prev) => (prev && prev.id === nodeId ? { ...prev, backupPower: true } : prev));
-  }, [addLog]);
-
-  const handleResetCooling = useCallback(() => {
-    addLog("OBJ_02 (Elektrownia): Krytyczne nawadnianie bloku gazowego zainicjowane! Blok chłodzenia zresetowany.", "success");
-    setCoolingSecondsLeft(null);
-    setNodes((prev) =>
-      prev.map((n) =>
-        n.id === "OBJ_02"
-          ? {
-              ...n,
-              health: 100,
-              status: "OPERATIONAL",
-              notes: "CHŁODZENIE PRZYWRÓCONE: Wymuszono awaryjny obieg wody z zapasów strategicznych."
-            }
-          : n
-      )
-    );
-    setSelectedNode((prev) =>
-      prev && prev.id === "OBJ_02"
-        ? {
-            ...prev,
-            health: 100,
-            status: "OPERATIONAL",
-            notes: "CHŁODZENIE PRZYWRÓCONE: Wymuszono awaryjny obieg wody z zapasów strategicznych."
-          }
-        : prev
-    );
-  }, [addLog, setCoolingSecondsLeft]);
-
-  const handleResetWater = useCallback(() => {
-    addLog("OBJ_03 (Ujęcie Wody): Wymuszono załączenie zapasowych głębinowych pomp wody. Zbiorniki napełnione.", "success");
-    setWaterSecondsLeft(null);
-    setNodes((prev) =>
-      prev.map((n) =>
-        n.id === "OBJ_03"
-          ? {
-              ...n,
-              health: 100,
-              status: "OPERATIONAL",
-              notes: "REZERWY PEŁNE: Awaryjne napełnianie zakończone sukcesem."
-            }
-          : n
-      )
-    );
-    setSelectedNode((prev) =>
-      prev && prev.id === "OBJ_03"
-        ? {
-            ...prev,
-            health: 100,
-            status: "OPERATIONAL",
-            notes: "REZERWY PEŁNE: Awaryjne napełnianie zakończone sukcesem."
-          }
-        : prev
-    );
-  }, [addLog, setWaterSecondsLeft]);
-
-  const handleRemoveSystem = useCallback((sysId: string) => {
-    const matched = deployedSystems.find((s) => s.id === sysId);
-    if (!matched) return;
-
-    removeDeployedSystem(sysId);
-
-    setDeployedSystems((prev) => prev.filter((s) => s.id !== sysId));
-    setSelectedSystem(null);
-    addLog(`DOWÓDZTWO: Zdemontowano tarczę defensywną ${matched.name}.`, "warning");
-  }, [deployedSystems, removeDeployedSystem, addLog]);
-
-  const handleRelocateSystem = useCallback((sysId: string, lat: number, lon: number, seconds: number) => {
-    const matched = deployedSystems.find(s => s.id === sysId);
-    if (!matched) return;
-
-    addLog(`ROZKAZ MARSZU: Rozpoczęto przemieszczanie baterii ${matched.name} na pozycję [${lat.toFixed(4)} N, ${lon.toFixed(4)} E]. Estymowany czas marszu: ${seconds}s.`, "info");
-
-    const updatedSys = {
-      ...matched,
-      status: "RELOCATING" as const,
-      relocationSecondsLeft: seconds,
-      targetLat: lat,
-      targetLon: lon
-    };
-
-    setDeployedSystems(prev => prev.map(s => s.id === sysId ? updatedSys : s));
-
-    if (drawDeployedSystem) {
-      drawDeployedSystem(updatedSys);
-    }
-  }, [deployedSystems, drawDeployedSystem, addLog]);
-
-  // Relocation Tick countdown
-  useEffect(() => {
-    const relocatingUnits = deployedSystems.filter(s => s.status === "RELOCATING");
-    if (relocatingUnits.length === 0) return;
-
-    const interval = setInterval(() => {
-      setDeployedSystems(prev => {
-        return prev.map(sys => {
-          if (sys.status === "RELOCATING") {
-            const timeLeft = (sys.relocationSecondsLeft || 1) - 1;
-            if (timeLeft <= 0) {
-              addLog(`MARSZ TAKTYCZNY ZAKOŃCZONY: Bateria ${sys.name} osiągnęła pozycję bojową [${sys.targetLat?.toFixed(4)} N, ${sys.targetLon?.toFixed(4)} E] i jest OPERACYJNA!`, "success");
-              const updatedSys = {
-                ...sys,
-                lat: sys.targetLat || sys.lat,
-                lon: sys.targetLon || sys.lon,
-                status: "OPERATIONAL" as const,
-                relocationSecondsLeft: undefined,
-                targetLat: undefined,
-                targetLon: undefined
-              };
-              setTimeout(() => {
-                if (drawDeployedSystem) {
-                  drawDeployedSystem(updatedSys);
-                }
-              }, 50);
-              return updatedSys;
-            } else {
-              const updatedSys = {
-                ...sys,
-                relocationSecondsLeft: timeLeft
-              };
-              setTimeout(() => {
-                if (drawDeployedSystem) {
-                  drawDeployedSystem(updatedSys);
-                }
-              }, 50);
-              return updatedSys;
-            }
-          }
-          return sys;
-        });
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [deployedSystems, drawDeployedSystem, addLog]);
-
-  const currentSelectedSystem = selectedSystem
-    ? deployedSystems.find(s => s.id === selectedSystem.id) || selectedSystem
-    : null;
-
-  // -------------------- STRATEG AI integration --------------------
-  const buildStrategSnapshot = useCallback((): TacticalSnapshot => {
-    return {
-      city: { name: "Stalowa Wola", lat: CENTER_LAT, lon: CENTER_LON },
-      nodes: nodes.map(n => ({
-        id: n.id,
-        name: n.name,
-        type: n.type,
-        lat: n.lat,
-        lon: n.lon,
-        description: n.description,
-        health: n.health,
-        status: n.status,
-        backupPower: n.backupPower,
-        notes: n.notes
-      })),
-      relations: relations.map(r => ({ source: r.source, target: r.target, label: r.label })),
-      deployedSystems: deployedSystems.map(s => ({
-        id: s.id,
-        type: s.type,
-        name: s.name,
-        lat: s.lat,
-        lon: s.lon,
-        radius: s.radius,
-        status: s.status
-      })),
-      threats: threats.map(t => ({
-        id: t.id,
-        type: t.type,
-        name: t.name,
-        lat: t.lat,
-        lon: t.lon,
-        alt: t.alt,
-        targetId: t.targetId,
-        status: t.status
-      })),
-      notes: `DEFCON ${defcon}`
-    };
-  }, [nodes, relations, deployedSystems, threats, defcon]);
-
-  const captureStrategScreenshot = useCallback(async () => {
-    return captureCesiumScreenshot(viewerRef.current);
-  }, [viewerRef]);
-
-  const handleStrategDeploy = useCallback(
-    ({ type, lat, lon }: { type: WeaponType; lat: number; lon: number }) => {
-      const weapon = WEAPONS.find(w => w.type === type);
-      if (!weapon) return;
-      const newSys: DeployedSystem = {
-        id: `SYS_STR_${Date.now()}_${Math.floor(Math.random() * 100)}`,
-        type,
-        name: `${weapon.name} #${Math.floor(Math.random() * 1000)}`,
-        lat,
-        lon,
-        radius: weapon.range,
-        color: weapon.colorHex,
-        status: "OPERATIONAL"
-      };
-      setDeployedSystems(prev => [...prev, newSys]);
-      // Render on Cesium
-      setTimeout(() => drawDeployedSystem(newSys), 50);
-    },
-    [drawDeployedSystem]
-  );
-
-  const handleStrategDrawOverlays = useCallback((assessment: Assessment, currNodes: CriticalNode[]) => {
-    drawStrategOverlays(viewerRef.current, assessment.predictedVectors, assessment.vulnerabilities, currNodes);
-  }, [viewerRef]);
-
-  const handleStrategClearOverlays = useCallback(() => {
-    clearStrategOverlays(viewerRef.current);
-  }, [viewerRef]);
-
-  const handleStrategLaunchWave = useCallback(
-    (wave: { threatType?: "DRONE" | "SHAHED" | "MISSILE"; targetNodeId?: string }) => {
-      const threatType = wave.threatType;
-      const wantedId = wave.targetNodeId;
-      if (!threatType || !wantedId) {
-        addLog(
-          `STRATEG AI · RED TEAM: pomijam falę — niekompletne dane (type=${threatType ?? "?"}, target=${wantedId ?? "?"})`,
-          "error"
-        );
-        return;
-      }
-      // Tolerant resolver: exact → case-insensitive → fallback to first surviving node
-      let target = nodes.find(n => n.id === wantedId);
-      if (!target) {
-        target = nodes.find(n => n.id.toUpperCase() === wantedId.toUpperCase());
-      }
-      if (!target) {
-        const fallback = nodes.find(n => n.status !== "DESTROYED") || nodes[0];
-        if (!fallback) {
-          addLog(
-            `STRATEG AI · RED TEAM: brak węzłów na mapie — fala ${threatType} odrzucona.`,
-            "error"
-          );
-          return;
-        }
-        addLog(
-          `STRATEG AI · RED TEAM: węzeł ${wantedId} nie istnieje — przekierowuję falę ${threatType} na ${fallback.id}.`,
-          "warning"
-        );
-        spawnThreat(threatType, fallback.id);
-        return;
-      }
-      addLog(
-        `STRATEG AI · RED TEAM: fala spawnowana — ${threatType} → ${target.name}.`,
-        "combat"
-      );
-      // Force-resume sim — pause leaves freshly-spawned threats frozen mid-air.
-      setSimSpeed(s => (s === 0 ? 1 : s));
-      spawnThreat(threatType, target.id);
-    },
-    [spawnThreat, nodes, addLog]
-  );
-
-  // Global keyboard shortcuts
-  const shortcuts = useMemo(() => ({
-    "1": () => launchScenario(1),
-    "2": () => launchScenario(2),
-    "3": () => launchScenario(3),
-    "4": () => launchScenario(4),
-    "q": () => { setSelectedWeapon(w => w === "PILICA"  ? null : "PILICA");  addLog("PILICA — wskaż punkt na mapie.", "info"); },
-    "w": () => { setSelectedWeapon(w => w === "WRE"     ? null : "WRE");     addLog("WRE Jammer — wskaż punkt na mapie.", "info"); },
-    "e": () => { setSelectedWeapon(w => w === "RADAR"   ? null : "RADAR");   addLog("Radar — wskaż punkt na mapie.", "info"); },
-    "r": () => { setSelectedWeapon(w => w === "PATRIOT" ? null : "PATRIOT"); addLog("Patriot PAC-3 — wskaż punkt na mapie.", "info"); },
-    "space": (e: KeyboardEvent) => {
-      e.preventDefault();
-      setSimSpeed(s => s === 0 ? 1 : 0);
-    },
-    "escape": () => {
-      if (relocationConfirmation) {
-        setRelocationConfirmation(null);
-        setIsRelocationDragging(false);
-        cancelRelocationDrag();
-      } else if (isRelocationDragging) {
-        setIsRelocationDragging(false);
-        cancelRelocationDrag();
-      } else if (selectedWeapon) {
-        setSelectedWeapon(null);
-        addLog("Anulowano wybór systemu obronnego.", "info");
-      } else if (selectedNode || selectedSystem) {
-        setSelectedNode(null);
-        setSelectedSystem(null);
-      }
-    },
-    "shift+r": () => handleReset(),
-    "s": () => setSchemaModeEnabled(v => !v),
-    "m": () => setThreatViewerOpen(true),
-    "a": () => setStrategOpen(v => !v)
-  }), [launchScenario, addLog, relocationConfirmation, isRelocationDragging, cancelRelocationDrag, selectedWeapon, selectedNode, selectedSystem, handleReset]);
-
-  useKeyboardShortcuts(shortcuts);
-
+function GithubGlyph({ className = "" }: { className?: string }) {
   return (
-    <div className="flex flex-col flex-1 h-screen relative select-none">
-      <Header
-        defcon={defcon}
-        clockTime={clockTime}
-        soundEnabled={soundEnabled}
-        onToggleSound={() => {
-          setSoundEnabled(!soundEnabled);
-          addLog(`DŹWIĘKI SYSTEMOWE: ${!soundEnabled ? "WŁĄCZONE" : "WYŁĄCZONE"}`, "info");
-        }}
-        onAddLog={addLog}
-        schemaModeEnabled={schemaModeEnabled}
-        onToggleSchemaMode={() => {
-          setSchemaModeEnabled(!schemaModeEnabled);
-          addLog(`WIZUALIZACJA SIECI: Przełączono podgląd schematu na ${!schemaModeEnabled ? "AKTYWNY" : "NIEAKTYWNY"}.`, "info");
-        }}
-        theme={theme}
-        onToggleTheme={() => {
-          const nextTheme = theme === "light" ? "dark" : "light";
-          setTheme(nextTheme);
-          addLog(`MOTYW SYSTEMOWY: Zmieniono motyw graficzny na ${nextTheme === "light" ? "JASNY" : "CIEMNY"}.`, "info");
-        }}
-        onOpenThreatViewer={() => {
-          setThreatViewerOpen(true);
-          addLog("ROZPOZNANIE: Uruchomiono podgląd 3D modeli zagrożeń.", "info");
-        }}
-        strategOpen={strategOpen}
-        onToggleStrateg={() => {
-          setStrategOpen(v => !v);
-          if (!strategOpen) addLog("STRATEG AI: Panel otwarty.", "info");
-        }}
-      />
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden className={className}>
+      <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.55v-2.05c-3.2.7-3.88-1.36-3.88-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.69 1.25 3.35.95.1-.74.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.05 0 0 .96-.31 3.15 1.18a10.9 10.9 0 0 1 5.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.59.23 2.76.11 3.05.74.81 1.18 1.84 1.18 3.1 0 4.42-2.69 5.39-5.25 5.68.41.36.78 1.07.78 2.16v3.2c0 .3.21.66.8.55C20.21 21.39 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5Z" />
+    </svg>
+  );
+}
+import { StatusPill } from "./ui/StatusPill";
+import { Kbd } from "./ui/Kbd";
 
-      <AlertTicker threats={threats} />
+/* -------------------------------------------------------------------------- */
+/*  Brand mark                                                                */
+/* -------------------------------------------------------------------------- */
 
-      {schemaModeEnabled && (
-        <div className="fixed top-32 bottom-0 left-0 right-0 z-20 bg-canvas-gradient flex flex-col transition-all duration-500 ease-in-out">
-          <DependencyFlow
-            nodes={nodes}
-            relations={relations}
-            theme={theme}
-            onAddNode={handleAddNode}
-            onAddRelation={handleAddRelation}
-            onFlyTo={(lat, lon, name) => {
-              // Automatically switch back to 3D map view
-              setSchemaModeEnabled(false);
-              const matched = nodes.find(n => n.name === name);
-              if (matched) {
-                setSelectedNode(matched);
-                setSelectedSystem(null);
-              }
-              // Wait slightly for the view transition to start before camera fly
-              setTimeout(() => {
-                flyToNode(lat, lon, name);
-              }, 100);
-            }}
+function BrandMark({ size = 28 }: { size?: number }) {
+  return (
+    <div
+      className="grid place-items-center rounded-(--r-md) bg-[var(--text-1)] text-[var(--canvas)]"
+      style={{ width: size, height: size }}
+    >
+      <span style={{ fontWeight: 700, fontSize: size * 0.5, letterSpacing: "-0.02em" }}>S</span>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Top navigation                                                            */
+/* -------------------------------------------------------------------------- */
+
+function TopNav() {
+  return (
+    <header className="sticky top-0 z-50 backdrop-blur-md bg-[color-mix(in_srgb,var(--canvas)_82%,transparent)] border-b border-subtle">
+      <div className="max-w-[1180px] mx-auto px-6 h-14 flex items-center justify-between">
+        <Link href="/" className="flex items-center gap-2.5">
+          <BrandMark />
+          <div className="flex flex-col leading-tight">
+            <span className="text-heading text-primary">Steel sentinel</span>
+            <span className="text-micro text-muted -mt-0.5">Stalowa Wola · Digital twin</span>
+          </div>
+        </Link>
+
+        <nav className="hidden md:flex items-center gap-7 text-body text-secondary">
+          <a href="#mission" className="hover:text-primary transition-colors">Misja</a>
+          <a href="#features" className="hover:text-primary transition-colors">Możliwości</a>
+          <a href="#strateg" className="hover:text-primary transition-colors">Strateg AI</a>
+          <a href="#stack" className="hover:text-primary transition-colors">Stack</a>
+          <a href="#sources" className="hover:text-primary transition-colors">Źródła</a>
+        </nav>
+
+        <div className="flex items-center gap-2">
+          <a
+            href="https://github.com"
+            target="_blank"
+            rel="noreferrer"
+            className="hidden sm:inline-flex h-9 w-9 items-center justify-center rounded-(--r-md) text-secondary hover:text-primary hover:bg-surface-hover transition-colors"
+            aria-label="GitHub"
+          >
+            <GithubGlyph className="w-4 h-4" />
+          </a>
+          <Link
+            href="/dashboard"
+            className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-(--r-md) bg-[var(--text-1)] text-[var(--canvas)] text-body font-medium hover:bg-[color-mix(in_srgb,var(--text-1)_88%,transparent)] transition-colors"
+          >
+            Otwórz dashboard
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Hero — left text, right tactical preview                                  */
+/* -------------------------------------------------------------------------- */
+
+function ClockLine() {
+  const [t, setT] = useState("--:--:--");
+  useEffect(() => {
+    const tick = () => {
+      const d = new Date();
+      const hh = String(d.getUTCHours()).padStart(2, "0");
+      const mm = String(d.getUTCMinutes()).padStart(2, "0");
+      const ss = String(d.getUTCSeconds()).padStart(2, "0");
+      setT(`${hh}:${mm}:${ss}Z`);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
+  return <span className="text-data text-muted">{t}</span>;
+}
+
+function TacticalPreview() {
+  return (
+    <div className="relative w-full aspect-[5/4] rounded-(--r-xl) bg-surface-1 elev-3 overflow-hidden border border-subtle">
+      {/* Header strip */}
+      <div className="absolute top-0 inset-x-0 h-9 flex items-center justify-between px-3 border-b border-subtle bg-surface-2/80 backdrop-blur">
+        <div className="flex items-center gap-1.5">
+          <span className="w-2 h-2 rounded-full bg-[var(--error)]" />
+          <span className="w-2 h-2 rounded-full bg-[var(--warn)]" />
+          <span className="w-2 h-2 rounded-full bg-[var(--ok)]" />
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-micro text-muted">DEFCON</span>
+          <StatusPill tone="ok" size="xs" dot>3 · nominalny</StatusPill>
+        </div>
+        <ClockLine />
+      </div>
+
+      {/* Map "canvas" */}
+      <svg
+        className="absolute inset-0 top-9 w-full"
+        style={{ height: "calc(100% - 36px)" }}
+        viewBox="0 0 500 400"
+        preserveAspectRatio="xMidYMid slice"
+      >
+        <defs>
+          <radialGradient id="terrain" cx="55%" cy="40%" r="80%">
+            <stop offset="0%" stopColor="#f4f6fa" />
+            <stop offset="55%" stopColor="#e8ecf3" />
+            <stop offset="100%" stopColor="#d6dde9" />
+          </radialGradient>
+          <linearGradient id="riv" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#0891b2" stopOpacity="0.55" />
+            <stop offset="100%" stopColor="#0891b2" stopOpacity="0.15" />
+          </linearGradient>
+          <radialGradient id="dome-cyan">
+            <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.22" />
+            <stop offset="70%" stopColor="#06b6d4" stopOpacity="0.06" />
+            <stop offset="100%" stopColor="#06b6d4" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id="dome-red">
+            <stop offset="0%" stopColor="#dc2626" stopOpacity="0.18" />
+            <stop offset="70%" stopColor="#dc2626" stopOpacity="0.05" />
+            <stop offset="100%" stopColor="#dc2626" stopOpacity="0" />
+          </radialGradient>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(15,23,42,0.05)" strokeWidth="0.5" />
+          </pattern>
+        </defs>
+
+        <rect width="500" height="400" fill="url(#terrain)" />
+        <rect width="500" height="400" fill="url(#grid)" />
+
+        {/* River San */}
+        <path
+          d="M 60 30 Q 110 110 145 170 T 220 280 T 360 380"
+          stroke="url(#riv)"
+          strokeWidth="14"
+          strokeLinecap="round"
+          fill="none"
+          opacity="0.6"
+        />
+        <path
+          d="M 60 30 Q 110 110 145 170 T 220 280 T 360 380"
+          stroke="#0891b2"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          fill="none"
+          opacity="0.5"
+        />
+
+        {/* Defense domes */}
+        <circle cx="280" cy="180" r="110" fill="url(#dome-cyan)" />
+        <circle cx="280" cy="180" r="110" fill="none" stroke="#06b6d4" strokeWidth="1" strokeDasharray="3 4" opacity="0.45" />
+
+        <circle cx="200" cy="280" r="78" fill="url(#dome-cyan)" />
+        <circle cx="200" cy="280" r="78" fill="none" stroke="#06b6d4" strokeWidth="1" strokeDasharray="3 4" opacity="0.4" />
+
+        {/* Damaged-area halo */}
+        <circle cx="380" cy="110" r="80" fill="url(#dome-red)" />
+
+        {/* Connections between nodes */}
+        <g stroke="rgba(15,23,42,0.18)" strokeWidth="1" fill="none">
+          <path d="M 280 180 Q 320 140 360 110" />
+          <path d="M 280 180 Q 240 200 200 260" />
+          <path d="M 280 180 Q 300 220 320 280" />
+          <path d="M 360 110 Q 330 130 280 180" />
+        </g>
+
+        {/* Threat vector — Shahed along river */}
+        <path
+          d="M 470 380 Q 380 360 300 320 T 180 220 T 90 80"
+          stroke="#d97706"
+          strokeWidth="1.4"
+          strokeDasharray="5 5"
+          fill="none"
+          opacity="0.75"
+        />
+        <circle cx="300" cy="320" r="3.5" fill="#d97706" />
+
+        {/* Threat vector — missile */}
+        <path
+          d="M 480 60 Q 430 90 380 110"
+          stroke="#dc2626"
+          strokeWidth="1.4"
+          strokeDasharray="2 4"
+          fill="none"
+        />
+
+        {/* Critical infrastructure nodes */}
+        {/* OBJ_01 — HSW */}
+        <g>
+          <circle cx="280" cy="180" r="6" fill="#0b1220" />
+          <circle cx="280" cy="180" r="10" fill="none" stroke="#0b1220" strokeOpacity="0.2" />
+          <text x="294" y="183" fontFamily="JetBrains Mono, monospace" fontSize="9" fill="#0b1220">OBJ_01 · HSW</text>
+        </g>
+        {/* OBJ_02 — Power */}
+        <g>
+          <circle cx="360" cy="110" r="6" fill="#0b1220" />
+          <text x="372" y="113" fontFamily="JetBrains Mono, monospace" fontSize="9" fill="#0b1220">OBJ_02 · Power</text>
+        </g>
+        {/* OBJ_03 — Water */}
+        <g>
+          <circle cx="200" cy="280" r="6" fill="#0b1220" />
+          <text x="214" y="283" fontFamily="JetBrains Mono, monospace" fontSize="9" fill="#0b1220">OBJ_03 · Water</text>
+        </g>
+        {/* OBJ_04 — GPZ */}
+        <g>
+          <circle cx="320" cy="280" r="5" fill="#0b1220" />
+          <text x="332" y="283" fontFamily="JetBrains Mono, monospace" fontSize="9" fill="#0b1220">OBJ_04</text>
+        </g>
+        {/* OBJ_05 — Rail */}
+        <g>
+          <circle cx="150" cy="110" r="5" fill="#0b1220" />
+          <text x="160" y="113" fontFamily="JetBrains Mono, monospace" fontSize="9" fill="#0b1220">OBJ_05</text>
+        </g>
+        {/* OBJ_06 — Bridge */}
+        <g>
+          <circle cx="245" cy="220" r="5" fill="#0b1220" />
+        </g>
+        {/* OBJ_07 — HQ */}
+        <g>
+          <circle cx="240" cy="155" r="5" fill="#0b1220" />
+          <text x="252" y="158" fontFamily="JetBrains Mono, monospace" fontSize="9" fill="#0b1220">OBJ_07</text>
+        </g>
+
+        {/* DAMAGED indicator on OBJ_02 — pulse ring */}
+        <circle cx="360" cy="110" r="11" fill="none" stroke="#dc2626" strokeWidth="1.5">
+          <animate attributeName="r" from="6" to="22" dur="2s" repeatCount="indefinite" />
+          <animate attributeName="opacity" from="0.9" to="0" dur="2s" repeatCount="indefinite" />
+        </circle>
+      </svg>
+
+      {/* Floating mini cards */}
+      <div className="absolute left-3 bottom-3 right-3 flex items-end justify-between gap-3 pointer-events-none">
+        <div className="bg-surface-2/95 backdrop-blur rounded-(--r-md) px-3 py-2 elev-1 border border-subtle">
+          <div className="text-micro text-muted">Wykryto echo radarowe</div>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--warn)] anim-pulse" />
+            <span className="text-data text-primary">SHAHED-136 · sektor 7</span>
+          </div>
+        </div>
+        <div className="bg-surface-2/95 backdrop-blur rounded-(--r-md) px-3 py-2 elev-1 border border-subtle text-right">
+          <div className="text-micro text-muted">PSR-A PILICA</div>
+          <div className="text-data text-primary mt-0.5">5000 m · ready</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Hero() {
+  return (
+    <section className="relative">
+      <div className="max-w-[1180px] mx-auto px-6 pt-16 pb-20 lg:pt-24 lg:pb-28 grid lg:grid-cols-[1.05fr,1fr] gap-12 lg:gap-16 items-center">
+        <div className="flex flex-col gap-7">
+          <div className="inline-flex self-start items-center gap-2 pl-2 pr-3 py-1 rounded-(--r-pill) bg-surface-1 border border-subtle elev-1">
+            <StatusPill tone="accent" size="xs" dot pulse>Live</StatusPill>
+            <span className="text-caption text-secondary">Common Operational Picture · v2</span>
+          </div>
+
+          <h1 className="text-primary font-semibold tracking-[-0.02em] leading-[1.04] text-[44px] sm:text-[56px] lg:text-[64px]">
+            Niemy strażnik <br className="hidden sm:block" />
+            <span className="text-secondary">infrastruktury krytycznej.</span>
+          </h1>
+
+          <p className="text-secondary text-[17px] leading-relaxed max-w-[560px]">
+            Cyfrowy bliźniak miasta średniej wielkości — analizuje powiązania kaskadowe,
+            symuluje wektory ataku z powietrza i pomaga rozstawić obronę zanim dron
+            dotrze do bramy Huty.
+          </p>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Link
+              href="/dashboard"
+              className="inline-flex items-center gap-2 h-11 px-5 rounded-(--r-md) bg-[var(--text-1)] text-[var(--canvas)] text-heading font-medium hover:bg-[color-mix(in_srgb,var(--text-1)_88%,transparent)] transition-colors"
+            >
+              Uruchom dashboard
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+            <a
+              href="#mission"
+              className="inline-flex items-center gap-2 h-11 px-5 rounded-(--r-md) bg-surface-1 border border-subtle text-primary text-heading hover:bg-surface-hover transition-colors"
+            >
+              <Play className="w-4 h-4" />
+              Zobacz koncepcję
+            </a>
+          </div>
+
+          <div className="flex items-center gap-5 pt-3 text-caption text-muted">
+            <div className="flex items-center gap-1.5">
+              <Kbd>A</Kbd>
+              <span>Strateg AI</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Kbd>1</Kbd><Kbd>2</Kbd><Kbd>3</Kbd><Kbd>4</Kbd>
+              <span>Scenariusze</span>
+            </div>
+            <div className="hidden sm:flex items-center gap-1.5">
+              <Kbd>Q</Kbd><Kbd>W</Kbd><Kbd>E</Kbd><Kbd>R</Kbd>
+              <span>Arsenał</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="relative">
+          {/* Soft backdrop glow */}
+          <div
+            aria-hidden
+            className="absolute -inset-8 -z-10 rounded-full blur-3xl opacity-50"
+            style={{ background: "radial-gradient(closest-side, var(--accent-soft), transparent 70%)" }}
+          />
+          <TacticalPreview />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Stats strip                                                               */
+/* -------------------------------------------------------------------------- */
+
+const STATS: { value: string; label: string; sub: string }[] = [
+  { value: "7", label: "Obiektów krytycznych", sub: "Realny rejestr HSW · MZK · GPZ" },
+  { value: "4", label: "Systemy obronne", sub: "Pilica · WRE · Radar · Patriot" },
+  { value: "3", label: "Klasy zagrożeń", sub: "Dron · Shahed · Rakieta" },
+  { value: "GPT-4o", label: "Vision strateg AI", sub: "Ocena · plan · red team · AAR" }
+];
+
+function StatsStrip() {
+  return (
+    <section className="border-y border-subtle bg-surface-1/50">
+      <div className="max-w-[1180px] mx-auto px-6 py-10 grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-8">
+        {STATS.map((s) => (
+          <div key={s.label} className="flex flex-col gap-1">
+            <span className="text-display text-primary">{s.value}</span>
+            <span className="text-heading text-primary">{s.label}</span>
+            <span className="text-caption text-muted">{s.sub}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Mission                                                                   */
+/* -------------------------------------------------------------------------- */
+
+function Mission() {
+  return (
+    <section id="mission" className="max-w-[1180px] mx-auto px-6 py-24">
+      <div className="grid lg:grid-cols-[1fr,1.4fr] gap-12 lg:gap-20 items-start">
+        <div>
+          <span className="text-micro text-muted uppercase tracking-wider">01 · Misja</span>
+          <h2 className="text-primary mt-3 text-[34px] sm:text-[40px] font-semibold tracking-[-0.02em] leading-[1.1]">
+            Niebezpieczeństwo<br />nadchodzi z góry.
+          </h2>
+        </div>
+        <div className="flex flex-col gap-5">
+          <blockquote className="text-[19px] leading-relaxed text-primary border-l-2 border-[var(--text-1)] pl-5">
+            „Jego wzrok przebija ściany, sieci i instalacje. Zna każdy punkt strategiczny
+            i każdą słabość, którą miasto musi chronić."
+          </blockquote>
+          <p className="text-secondary text-body leading-relaxed">
+            Stalowa Wola to miasto z silną tradycją przemysłową i obronną — Huta produkuje Kraby
+            i Borsuki, blok gazowo-parowy zasila region, węzeł kolejowy obsługuje logistykę wojskową.
+            Steel sentinel mapuje te obiekty, ich kaskadowe zależności i strefy podatności na
+            drony komercyjne, amunicję krążącą oraz rakiety manewrujące.
+          </p>
+          <p className="text-secondary text-body leading-relaxed">
+            Narzędzie zaprojektowane jako szablon „Digital Twin" możliwy do wdrożenia w dowolnym
+            średnim mieście z przemysłem zbrojeniowym lub ciężkim. Model B2G dla wydziałów
+            zarządzania kryzysowego i B2B dla zarządów spółek operujących infrastrukturą krytyczną.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Features — hero card + 5 secondary                                        */
+/* -------------------------------------------------------------------------- */
+
+function Features() {
+  return (
+    <section id="features" className="bg-surface-1/40 border-y border-subtle">
+      <div className="max-w-[1180px] mx-auto px-6 py-24">
+        <div className="flex flex-col gap-3 max-w-[640px] mb-12">
+          <span className="text-micro text-muted uppercase tracking-wider">02 · Możliwości</span>
+          <h2 className="text-primary text-[34px] sm:text-[40px] font-semibold tracking-[-0.02em] leading-[1.1]">
+            Cały cykl decyzyjny — w jednym ekranie.
+          </h2>
+          <p className="text-secondary text-body leading-relaxed">
+            Od mapy infrastruktury, przez symulację scenariuszy ataku, po automatyczne playbooki
+            reagowania. Wszystko działa w czasie rzeczywistym, na cyfrowym bliźniaku miasta.
+          </p>
+        </div>
+
+        <div className="grid lg:grid-cols-3 gap-4">
+          {/* Hero feature — Cesium 3D map (spans 2 cols on lg) */}
+          <article className="lg:col-span-2 lg:row-span-2 relative rounded-(--r-xl) bg-[var(--text-1)] text-[var(--canvas)] p-8 lg:p-10 elev-2 overflow-hidden flex flex-col gap-5 min-h-[420px]">
+            {/* Decorative grid */}
+            <svg className="absolute inset-0 w-full h-full opacity-[0.07]" aria-hidden>
+              <defs>
+                <pattern id="hg" width="32" height="32" patternUnits="userSpaceOnUse">
+                  <path d="M 32 0 L 0 0 0 32" fill="none" stroke="white" strokeWidth="0.5" />
+                </pattern>
+              </defs>
+              <rect width="100%" height="100%" fill="url(#hg)" />
+            </svg>
+
+            <div className="relative flex flex-col gap-5 flex-1">
+              <span className="text-micro text-[var(--canvas)]/60 uppercase tracking-wider">Centralny widok</span>
+              <h3 className="text-[28px] lg:text-[34px] font-semibold tracking-[-0.02em] leading-[1.1]">
+                Cyfrowy bliźniak Stalowej Woli na fotorealistycznym globusie 3D.
+              </h3>
+              <p className="text-[var(--canvas)]/75 leading-relaxed max-w-[520px]">
+                CesiumJS z terenem 3D, podkładami satelitarnymi i własną warstwą obiektów krytycznych.
+                Klikalne markery, paraboliczne krzywe zależności, kopuły zasięgu broni nakładane na
+                rzeczywistą topografię — od koryta Sanu po blok gazowo-parowy.
+              </p>
+
+              <div className="mt-auto flex flex-wrap items-center gap-3">
+                <Link
+                  href="/dashboard"
+                  className="inline-flex items-center gap-2 h-10 px-4 rounded-(--r-md) bg-[var(--canvas)] text-[var(--text-1)] text-body font-medium hover:bg-white transition-colors"
+                >
+                  Wejdź na mapę
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+                <span className="text-caption text-[var(--canvas)]/55">
+                  CesiumJS 1.118 · Esri imagery · Photorealistic 3D Tiles
+                </span>
+              </div>
+            </div>
+          </article>
+
+          {/* Secondary features */}
+          <FeatureCard
+            eyebrow="Sieć zależności"
+            title="Graf kaskadowych awarii."
+            body="Skierowany graf zależności analizuje co padnie po uderzeniu w GPZ — Centrum kryzysowe traci łączność, Huta przechodzi na rezerwę, woda w zbiornikach starcza na 12h."
+            hint="@xyflow/react · klawisz S"
+          />
+          <FeatureCard
+            eyebrow="Scenariusze"
+            title="Symulator wektorów ataku."
+            body="Rój dronów rozpoznawczych, Shahed ukrywający się w korytarzu Sanu, taktyczny pocisk manewrujący, atak saturacyjny. Każdy z realistyczną trajektorią i charakterystyką."
+            hint="4 scenariusze · klawisze 1–4"
+          />
+          <FeatureCard
+            eyebrow="Arsenał"
+            title="Pilica · WRE · Radar · Patriot."
+            body="Rozstawiaj systemy obronne klikiem na mapie. Pilica zwalcza wszystko w 5 km, WRE neutralizuje drony komercyjne, Patriot PAC-3 pokrywa 40 km dla rakiet i Shahedów."
+            hint="Q · W · E · R"
+          />
+          <FeatureCard
+            eyebrow="Reagowanie"
+            title="Automatyczne playbooki."
+            body="Po impakcie aplikacja odpala procedury kryzysowe — syreny miejskie, broadcast SMS przez RCB, ręczne załączanie generatorów rezerwowych w 7 obiektach jednocześnie."
+            hint="DEFCON · cascading alarm"
           />
         </div>
-      )}
+      </div>
+    </section>
+  );
+}
 
-      <CesiumViewport 
-        cesiumContainerRef={cesiumContainerRef} 
-        isSplitScreen={schemaModeEnabled}
-      />
+function FeatureCard({
+  eyebrow,
+  title,
+  body,
+  hint
+}: {
+  eyebrow: string;
+  title: string;
+  body: string;
+  hint: string;
+}) {
+  return (
+    <article className="relative rounded-(--r-xl) bg-surface-1 border border-subtle p-6 elev-1 flex flex-col gap-3 transition-shadow hover:elev-2">
+      <span className="text-micro text-muted uppercase tracking-wider">{eyebrow}</span>
+      <h3 className="text-title text-primary leading-[1.25]">{title}</h3>
+      <p className="text-secondary text-body leading-relaxed">{body}</p>
+      <span className="text-caption text-muted mt-auto pt-3 border-t border-subtle">{hint}</span>
+    </article>
+  );
+}
 
-      {/* LEFT — obiekty chronione + monitor radarowy */}
-      {!schemaModeEnabled && (
-        <div className="fixed left-3 top-32 bottom-24 w-80 z-40 flex flex-col gap-3">
-          <div className="flex flex-col gap-3 h-full min-h-0">
-            <LeftSidebar
-              nodes={nodes}
-              relations={relations}
-              onNodeClick={handleNodeClick}
-              onAddNode={handleAddNode}
-              onAddRelation={handleAddRelation}
-              isCollapsed={leftPanelCollapsed}
-              onToggle={() => setLeftPanelCollapsed(!leftPanelCollapsed)}
-              selectedNodeId={selectedNode?.id || null}
-              hoveredNodeId={hoveredNodeId}
-              onHoverNode={setHoveredNodeId}
-            />
+/* -------------------------------------------------------------------------- */
+/*  Infrastructure roster                                                     */
+/* -------------------------------------------------------------------------- */
 
-            {threats.length > 0 && (
-              <ThreatMonitor
-                threats={threats}
-                nodes={nodes}
-                isCollapsed={radarCollapsed}
-                onToggle={() => setRadarCollapsed(!radarCollapsed)}
-              />
-            )}
+const ROSTER: { id: string; name: string; type: string; lat: string; role: string }[] = [
+  { id: "OBJ_01", name: "Huta Stalowa Wola S.A.", type: "Przemysł obronny", lat: "50.5482 N · 22.0495 E", role: "Produkcja Krab · Borsuk" },
+  { id: "OBJ_02", name: "Elektrownia Stalowa Wola", type: "Energetyka", lat: "50.5574 N · 22.0621 E", role: "Blok gazowo-parowy" },
+  { id: "OBJ_03", name: "Ujęcie wody MZK", type: "Wodociągi", lat: "50.5841 N · 22.0315 E", role: "Zaopatrzenie miasta + chłodzenie elektrowni" },
+  { id: "OBJ_04", name: "GPZ Maziarnia", type: "Energetyka", lat: "50.5395 N · 22.0682 E", role: "Stacja transformatorowa WN" },
+  { id: "OBJ_05", name: "Węzeł Rozwadów", type: "Logistyka", lat: "50.5878 N · 22.0465 E", role: "Kolej towarowa i wojskowa" },
+  { id: "OBJ_06", name: "Most gen. Bora-Komorowskiego", type: "Komunikacja", lat: "50.5744 N · 22.0678 E", role: "Przeprawa przez San" },
+  { id: "OBJ_07", name: "Centrum zarządzania kryzysowego", type: "Administracja", lat: "50.5701 N · 22.0524 E", role: "Węzeł decyzyjny obrony cywilnej" }
+];
+
+function Infrastructure() {
+  return (
+    <section className="max-w-[1180px] mx-auto px-6 py-24">
+      <div className="flex flex-col gap-3 max-w-[640px] mb-10">
+        <span className="text-micro text-muted uppercase tracking-wider">03 · Rejestr</span>
+        <h2 className="text-primary text-[34px] sm:text-[40px] font-semibold tracking-[-0.02em] leading-[1.1]">
+          Siedem obiektów. Cztery łańcuchy zależności.
+        </h2>
+        <p className="text-secondary text-body leading-relaxed">
+          Realne dane GPS, realne role w sieci miasta. To nie demo-mockup — to operacyjny zestaw,
+          który można podmienić na rejestr dowolnej innej średniej aglomeracji.
+        </p>
+      </div>
+
+      <div className="rounded-(--r-xl) bg-surface-1 border border-subtle elev-1 overflow-hidden">
+        <div className="hidden md:grid grid-cols-[110px_1.4fr_1fr_1.3fr_1.5fr] gap-4 px-6 py-3 border-b border-subtle bg-surface-data text-micro text-muted uppercase tracking-wider">
+          <span>ID</span>
+          <span>Obiekt</span>
+          <span>Typ</span>
+          <span>GPS</span>
+          <span>Rola</span>
+        </div>
+        {ROSTER.map((r, i) => (
+          <div
+            key={r.id}
+            className={`grid md:grid-cols-[110px_1.4fr_1fr_1.3fr_1.5fr] gap-y-1 md:gap-4 px-6 py-4 ${
+              i !== ROSTER.length - 1 ? "border-b border-subtle" : ""
+            } hover:bg-surface-hover transition-colors`}
+          >
+            <span className="text-data text-muted">{r.id}</span>
+            <span className="text-heading text-primary">{r.name}</span>
+            <span className="text-body text-secondary">{r.type}</span>
+            <span className="text-data text-secondary">{r.lat}</span>
+            <span className="text-body text-secondary">{r.role}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Threats vs Defense                                                        */
+/* -------------------------------------------------------------------------- */
+
+function ThreatsVsDefense() {
+  return (
+    <section className="border-y border-subtle bg-surface-1/40">
+      <div className="max-w-[1180px] mx-auto px-6 py-24 grid lg:grid-cols-2 gap-12">
+        {/* Threats */}
+        <div className="flex flex-col gap-6">
+          <div className="flex flex-col gap-3">
+            <span className="text-micro text-muted uppercase tracking-wider">04 · Threat library</span>
+            <h2 className="text-primary text-[28px] font-semibold tracking-[-0.01em] leading-[1.15]">
+              Trzy klasy zagrożeń, które dziś naprawdę latają nad linią frontu.
+            </h2>
+          </div>
+          <div className="flex flex-col gap-3">
+            {[
+              { name: "Dron komercyjny", spec: "Pułap 120 m · niska prędkość", soft: "Podatny na WRE i Pilicę", tone: "info" as const },
+              { name: "Shahed-136", spec: "Pułap 250 m · trajektoria wzdłuż Sanu", soft: "Odporny na WRE, Pilica + Patriot", tone: "warn" as const },
+              { name: "Rakieta manewrująca", spec: "Pułap 600 m · wysoka prędkość", soft: "Tylko Patriot · korytarz minięty w sekundy", tone: "error" as const }
+            ].map((t) => (
+              <div key={t.name} className="flex items-start justify-between gap-4 p-5 rounded-(--r-md) bg-surface-1 border border-subtle">
+                <div className="flex flex-col gap-1">
+                  <span className="text-heading text-primary">{t.name}</span>
+                  <span className="text-caption text-muted">{t.spec}</span>
+                  <span className="text-body text-secondary mt-1">{t.soft}</span>
+                </div>
+                <StatusPill tone={t.tone} size="sm" dot>
+                  {t.tone === "info" ? "Niskie" : t.tone === "warn" ? "Średnie" : "Krytyczne"}
+                </StatusPill>
+              </div>
+            ))}
           </div>
         </div>
-      )}
 
-      {/* RIGHT — scenariusze (hero) + arsenał + konsola */}
-      {!schemaModeEnabled && (
-        <div className="fixed right-3 top-32 bottom-24 w-80 z-40 flex flex-col">
-          <div className="flex flex-col gap-3 h-full min-h-0 overflow-y-auto scroll-thin pr-1">
-            <div className="shrink-0">
-              <ScenariosPanel
-                threats={threats}
-                onLaunchScenario={launchScenario}
-                onReset={handleReset}
-                simSpeed={simSpeed}
-                onTogglePause={() => {
-                  setSimSpeed(simSpeed === 0 ? 1 : 0);
-                  addLog(`SYMULATOR: ${simSpeed === 0 ? "WZNOWIONY" : "WSTRZYMANY"}`, "info");
-                }}
-              />
-            </div>
-
-            <div className="shrink-0">
-              <ArsenalPanel
-                weapons={WEAPONS}
-                deployedSystems={deployedSystems}
-                selectedWeapon={selectedWeapon}
-                onSelectWeapon={(type) => {
-                  setSelectedWeapon(type);
-                  if (type) {
-                    addLog(`Wybrano ${WEAPONS.find(w => w.type === type)?.name} — wskaż punkt na mapie 3D.`, "info");
-                  }
-                }}
-                onAddLog={addLog}
-              />
-            </div>
-
-            <div className="shrink-0">
-              <CommandLogger
-                logs={logs}
-                clockTime={clockTime}
-                isCollapsed={loggerCollapsed}
-                onToggle={() => setLoggerCollapsed(!loggerCollapsed)}
-              />
-            </div>
+        {/* Defense */}
+        <div className="flex flex-col gap-6">
+          <div className="flex flex-col gap-3">
+            <span className="text-micro text-muted uppercase tracking-wider">05 · Arsenal</span>
+            <h2 className="text-primary text-[28px] font-semibold tracking-[-0.01em] leading-[1.15]">
+              Cztery warstwy obrony — od jammingu po przechwytywanie kinetyczne.
+            </h2>
+          </div>
+          <div className="flex flex-col gap-3">
+            {[
+              { kb: "Q", name: "PSR-A Pilica", range: "5 000 m", note: "VSHORAD — drony, Shahed, rakieta w zasięgu" },
+              { kb: "W", name: "WRE Jammer", range: "2 000 m", note: "Walka radioelektroniczna — drony komercyjne" },
+              { kb: "E", name: "Radar dopplerowski", range: "3 500 m", note: "Wczesne wykrywanie ech radarowych" },
+              { kb: "R", name: "Patriot PAC-3", range: "40 000 m", note: "Daleki zasięg — Shahed i rakiety manewrujące" }
+            ].map((w) => (
+              <div key={w.kb} className="flex items-center justify-between gap-4 p-5 rounded-(--r-md) bg-surface-1 border border-subtle">
+                <div className="flex items-center gap-4 flex-1 min-w-0">
+                  <Kbd>{w.kb}</Kbd>
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-heading text-primary truncate">{w.name}</span>
+                    <span className="text-caption text-muted">{w.note}</span>
+                  </div>
+                </div>
+                <span className="text-data text-primary shrink-0">{w.range}</span>
+              </div>
+            ))}
           </div>
         </div>
-      )}
+      </div>
+    </section>
+  );
+}
 
-      {!schemaModeEnabled && (
-        <TelemetryHUD
-          hoveredCoords={hoveredCoords}
-          mapLayers={mapLayers}
-          onToggleLayer={handleToggleLayer}
-          baseMapType={baseMapType}
-          onSetBaseMapType={setBaseMapType}
-          sceneMode={sceneMode}
-          onSetSceneMode={setSceneMode}
-        />
-      )}
+/* -------------------------------------------------------------------------- */
+/*  STRATEG AI                                                                */
+/* -------------------------------------------------------------------------- */
 
-      <ObjectDetailCard
-        selectedNode={selectedNode}
-        selectedSystem={selectedSystem}
-        onClose={() => {
-          setSelectedNode(null);
-          setSelectedSystem(null);
-          if (isRelocationDragging) {
-            setIsRelocationDragging(false);
-            cancelRelocationDrag();
-          }
-        }}
-        onActivateBackupPower={handleActivateBackupPower}
-        coolingSecondsLeft={coolingSecondsLeft}
-        waterSecondsLeft={waterSecondsLeft}
-        onResetCooling={handleResetCooling}
-        onResetWater={handleResetWater}
-        onRemoveSystem={handleRemoveSystem}
-        onRelocateSystem={handleRelocateSystem}
-        onFlyTo={flyToNode}
-        leftSidebarCollapsed={leftPanelCollapsed}
-        isRelocationDragging={isRelocationDragging}
-        onStartRelocationDrag={(sysId) => {
-          setIsRelocationDragging(true);
-          startRelocationDrag(sysId);
-        }}
-        onCancelRelocationDrag={() => {
-          setIsRelocationDragging(false);
-          cancelRelocationDrag();
-        }}
-      />
+function StrategAI() {
+  const phases = [
+    { n: "01", title: "Ocena sytuacyjna", body: "Screenshot Cesium → vision model identyfikuje wrażliwości, rysuje pomarańczowe parabole wektorów i czerwone halo wokół najbardziej narażonych węzłów." },
+    { n: "02", title: "Plan obrony", body: "Strukturalna rekomendacja 3–6 deploymentów (typ + GPS + rationale), playbooki i warstwowa strategia z ryzykiem rezydualnym." },
+    { n: "03", title: "Rozstawienie", body: "Każda rekomendacja ma przycisk „Rozstaw” lub „Rozstaw wszystko” — sekwencyjna animacja, tym samym pipeline'em co manualny click." },
+    { n: "04", title: "Red team + AAR", body: "AI wciela się w przeciwnika, generuje scenariusz dopasowany do luk w planie, po wykonaniu — streaming AAR z lekcjami do następnej rotacji." }
+  ];
 
-      <Dialog
-        open={!!relocationConfirmation}
-        onClose={() => {
-          setIsRelocationDragging(false);
-          cancelRelocationDrag();
-          setRelocationConfirmation(null);
-        }}
-        eyebrow="Rozkaz marszu"
-        title="Potwierdź relokację baterii"
-        width="md"
-        footer={
-          relocationConfirmation && (
-            <>
-              <Button
-                variant="ghost" size="md"
-                onClick={() => {
-                  setIsRelocationDragging(false);
-                  cancelRelocationDrag();
-                  setRelocationConfirmation(null);
-                }}
-              >
-                Anuluj
-              </Button>
-              <Button
-                variant="primary" size="md"
-                onClick={() => {
-                  handleRelocateSystem(
-                    relocationConfirmation.sysId,
-                    relocationConfirmation.lat,
-                    relocationConfirmation.lon,
-                    relocationConfirmation.seconds
-                  );
-                  setIsRelocationDragging(false);
-                  cancelRelocationDrag();
-                  setRelocationConfirmation(null);
-                }}
-              >
-                Zatwierdź marsz
-              </Button>
-            </>
-          )
-        }
-      >
-        {relocationConfirmation && (
-          <div className="flex flex-col gap-4">
-            <p className="text-body text-secondary leading-relaxed">
-              Czy chcesz wydać rozkaz dyslokacji jednostki{" "}
-              <span className="text-primary font-medium">
-                {deployedSystems.find(s => s.id === relocationConfirmation.sysId)?.name}
-              </span>{" "}
-              na nową pozycję bojową?
-            </p>
+  return (
+    <section id="strateg" className="max-w-[1180px] mx-auto px-6 py-28">
+      <div className="grid lg:grid-cols-[1fr,1.2fr] gap-12 lg:gap-16">
+        <div className="flex flex-col gap-6 lg:sticky lg:top-24 self-start">
+          <div className="inline-flex items-center gap-2 self-start pl-2 pr-3 py-1 rounded-(--r-pill) bg-accent-soft border border-[var(--accent)]/30">
+            <Sparkles className="w-3.5 h-3.5 text-accent" />
+            <span className="text-caption text-accent">Strateg AI · GPT-4o vision</span>
+          </div>
+          <h2 className="text-primary text-[34px] sm:text-[42px] font-semibold tracking-[-0.02em] leading-[1.05]">
+            Architekt obrony, który <span className="text-accent">widzi mapę</span>.
+          </h2>
+          <p className="text-secondary text-body leading-relaxed">
+            Cztero-etapowa pętla planowania i red-teamu zbudowana na Vercel AI SDK ze
+            strumieniowymi structured outputs. UI renderuje karty rekomendacji „na żywo"
+            zanim cała struktura dotrze z modelu.
+          </p>
+          <div className="flex flex-wrap items-center gap-3 pt-2">
+            <Link
+              href="/dashboard"
+              className="inline-flex items-center gap-2 h-10 px-4 rounded-(--r-md) bg-[var(--text-1)] text-[var(--canvas)] text-body font-medium hover:bg-[color-mix(in_srgb,var(--text-1)_88%,transparent)] transition-colors"
+            >
+              Otwórz panel
+              <Kbd className="!bg-[var(--canvas)]/15 !border-[var(--canvas)]/20 !text-[var(--canvas)]">A</Kbd>
+            </Link>
+          </div>
+        </div>
 
-            <div className="px-4 py-3 rounded-(--r-md) bg-surface-data grid grid-cols-2 gap-3">
-              <div className="flex flex-col">
-                <span className="text-micro text-muted">Pozycja docelowa</span>
-                <span className="text-data text-primary">
-                  {relocationConfirmation.lat.toFixed(4)}°N · {relocationConfirmation.lon.toFixed(4)}°E
-                </span>
+        <ol className="flex flex-col">
+          {phases.map((p, i) => (
+            <li
+              key={p.n}
+              className={`grid grid-cols-[auto,1fr] gap-6 py-7 ${
+                i !== phases.length - 1 ? "border-b border-subtle" : ""
+              }`}
+            >
+              <span className="text-data text-muted pt-0.5">{p.n}</span>
+              <div className="flex flex-col gap-2">
+                <h3 className="text-title text-primary">{p.title}</h3>
+                <p className="text-secondary text-body leading-relaxed">{p.body}</p>
               </div>
-              <div className="flex flex-col">
-                <span className="text-micro text-muted">Dystans marszu</span>
-                <span className="text-data text-primary">{relocationConfirmation.distance.toFixed(2)} km</span>
-              </div>
-              <div className="flex flex-col col-span-2 pt-3 mt-1 border-t border-subtle">
-                <span className="text-micro text-muted">Szacowany realny czas marszu kolumny</span>
-                <span className="text-heading text-warn mt-0.5">{relocationConfirmation.realTime}</span>
-                <span className="text-micro text-muted mt-1 italic">
-                  Na potrzeby demo czas przejazdu skrócono do 5 sekund.
-                </span>
-              </div>
-              <div className="flex items-center gap-2 col-span-2 pt-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-(--error) anim-pulse" />
-                <span className="text-caption text-error">
-                  Bateria nieaktywna w trakcie transferu.
-                </span>
-              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Tech stack                                                                */
+/* -------------------------------------------------------------------------- */
+
+function TechStack() {
+  const items = [
+    { name: "Next.js 16", role: "App Router · React 19" },
+    { name: "CesiumJS 1.118", role: "3D terrain · entities · drillPick" },
+    { name: "Tailwind v4", role: "Design tokens · soft SaaS" },
+    { name: "@xyflow/react", role: "Graf zależności kaskadowych" },
+    { name: "React Three Fiber", role: "Katalog 3D modeli GLB" },
+    { name: "Vercel AI SDK", role: "streamObject · structured outputs" },
+    { name: "OpenAI GPT-4o", role: "Vision strateg + red team" },
+    { name: "Zod", role: "Schematy + walidacja structured outputs" }
+  ];
+
+  return (
+    <section id="stack" className="border-y border-subtle bg-surface-1/40">
+      <div className="max-w-[1180px] mx-auto px-6 py-24">
+        <div className="flex items-end justify-between gap-6 mb-10 flex-wrap">
+          <div className="flex flex-col gap-3 max-w-[560px]">
+            <span className="text-micro text-muted uppercase tracking-wider">06 · Stack</span>
+            <h2 className="text-primary text-[34px] sm:text-[40px] font-semibold tracking-[-0.02em] leading-[1.1]">
+              Zbudowane na narzędziach, które utrzymasz po hackathonie.
+            </h2>
+          </div>
+          <a href="#" className="inline-flex items-center gap-1.5 text-body text-secondary hover:text-primary transition-colors">
+            CLAUDE.md
+            <ArrowUpRight className="w-3.5 h-3.5" />
+          </a>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {items.map((it) => (
+            <div key={it.name} className="rounded-(--r-md) bg-surface-1 border border-subtle px-5 py-4">
+              <div className="text-heading text-primary">{it.name}</div>
+              <div className="text-caption text-muted mt-1">{it.role}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Closing CTA                                                               */
+/* -------------------------------------------------------------------------- */
+
+function ClosingCTA() {
+  return (
+    <section className="max-w-[1180px] mx-auto px-6 py-28">
+      <div className="relative rounded-(--r-xl) bg-[var(--text-1)] text-[var(--canvas)] p-10 lg:p-14 overflow-hidden">
+        {/* Decorative arcs */}
+        <svg className="absolute right-0 top-0 h-full w-2/3 opacity-[0.08]" viewBox="0 0 600 400" aria-hidden>
+          <defs>
+            <radialGradient id="g2" cx="100%" cy="50%" r="80%">
+              <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.8" />
+              <stop offset="100%" stopColor="#22d3ee" stopOpacity="0" />
+            </radialGradient>
+          </defs>
+          <circle cx="600" cy="200" r="180" fill="none" stroke="white" strokeWidth="1" />
+          <circle cx="600" cy="200" r="260" fill="none" stroke="white" strokeWidth="0.5" />
+          <circle cx="600" cy="200" r="340" fill="none" stroke="white" strokeWidth="0.5" />
+          <rect width="600" height="400" fill="url(#g2)" />
+        </svg>
+
+        <div className="relative flex flex-col gap-6 max-w-[680px]">
+          <ShieldCheck className="w-7 h-7 text-[var(--canvas)]/80" />
+          <h2 className="text-[34px] sm:text-[44px] font-semibold tracking-[-0.02em] leading-[1.05]">
+            Każde miasto średniej wielkości zasługuje na własny digital twin.
+          </h2>
+          <p className="text-[var(--canvas)]/75 text-body leading-relaxed">
+            Steel sentinel został zaprojektowany jako szablon — geometrię obiektów, sieć
+            zależności i bibliotekę zagrożeń wymieniasz w plikach JSON. Reszta dashboardu
+            zostaje.
+          </p>
+          <div className="flex flex-wrap items-center gap-3 mt-2">
+            <Link
+              href="/dashboard"
+              className="inline-flex items-center gap-2 h-11 px-5 rounded-(--r-md) bg-[var(--canvas)] text-[var(--text-1)] text-heading font-medium hover:bg-white transition-colors"
+            >
+              Uruchom dashboard
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+            <a
+              href="#sources"
+              className="inline-flex items-center gap-2 h-11 px-5 rounded-(--r-md) border border-[var(--canvas)]/30 text-[var(--canvas)] text-heading hover:bg-[var(--canvas)]/10 transition-colors"
+            >
+              Zobacz źródła danych
+              <ChevronRight className="w-4 h-4" />
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Footer                                                                    */
+/* -------------------------------------------------------------------------- */
+
+function Footer() {
+  return (
+    <footer id="sources" className="border-t border-subtle bg-surface-1/50">
+      <div className="max-w-[1180px] mx-auto px-6 py-14 grid md:grid-cols-[1.4fr,1fr,1fr,1fr] gap-10">
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-2.5">
+            <BrandMark size={26} />
+            <div className="flex flex-col leading-tight">
+              <span className="text-heading text-primary">Steel sentinel</span>
+              <span className="text-micro text-muted -mt-0.5">Common Operational Picture</span>
             </div>
           </div>
-        )}
-      </Dialog>
-      <ThreatModelViewer
-        isOpen={threatViewerOpen}
-        onClose={() => setThreatViewerOpen(false)}
-      />
-      <DefconOverlay defcon={defcon} />
+          <p className="text-caption text-muted max-w-[320px]">
+            Projekt hackathonowy · Stalowa Wola · Digital twin krytycznej infrastruktury
+            przed zagrożeniami napowietrznymi.
+          </p>
+        </div>
 
-      {/* STRATEG AI — vision-based defense architect (panel slides in from the right) */}
-      <StrategPanel
-        isOpen={strategOpen && !schemaModeEnabled}
-        onClose={() => setStrategOpen(false)}
-        nodes={nodes}
-        relations={relations}
-        deployedSystems={deployedSystems}
-        threats={threats}
-        buildSnapshot={buildStrategSnapshot}
-        captureScreenshot={captureStrategScreenshot}
-        onDeployRecommendation={handleStrategDeploy}
-        onLaunchRedTeamWave={handleStrategLaunchWave}
-        onDrawOverlays={handleStrategDrawOverlays}
-        onClearOverlays={handleStrategClearOverlays}
-        onAddLog={addLog}
-      />
+        <div className="flex flex-col gap-2.5">
+          <span className="text-micro text-muted uppercase tracking-wider mb-1">Produkt</span>
+          <Link href="/dashboard" className="text-body text-secondary hover:text-primary transition-colors">Dashboard</Link>
+          <a href="#features" className="text-body text-secondary hover:text-primary transition-colors">Możliwości</a>
+          <a href="#strateg" className="text-body text-secondary hover:text-primary transition-colors">Strateg AI</a>
+        </div>
 
-      {/* Pierwsze kroki — pokazuje się raz na sesję, znika gdy user cokolwiek zrobi */}
-      <Coachmark
-        storageKey="sentinel-coachmark-onboarding"
-        hideWhen={threats.length > 0 || deployedSystems.length > 0 || selectedNode !== null || selectedSystem !== null}
-        title="Wybierz akcję, aby uruchomić symulację"
-        steps={[
-          { num: 1, label: "Uruchom scenariusz ataku", hint: "Prawy panel · klawisze 1–4" },
-          { num: 2, label: "Postaw system obronny na mapie", hint: "Klawisze Q · W · E · R, potem klik" },
-          { num: 3, label: "Lub kliknij obiekt na mapie", hint: "Pojawi się karta szczegółów" }
-        ]}
-        footer="Esc anuluje wybór · Spacja pauzuje symulację · S — schemat sieci"
-      />
-    </div>
+        <div className="flex flex-col gap-2.5">
+          <span className="text-micro text-muted uppercase tracking-wider mb-1">Zasoby</span>
+          <a href="#mission" className="text-body text-secondary hover:text-primary transition-colors">Misja</a>
+          <a href="#stack" className="text-body text-secondary hover:text-primary transition-colors">Stack</a>
+          <a href="#sources" className="text-body text-secondary hover:text-primary transition-colors">Źródła danych</a>
+        </div>
+
+        <div className="flex flex-col gap-2.5">
+          <span className="text-micro text-muted uppercase tracking-wider mb-1">Kontakt</span>
+          <a href="mailto:hello@steelsentinel.dev" className="text-body text-secondary hover:text-primary transition-colors">hello@steelsentinel.dev</a>
+          <a href="https://github.com" target="_blank" rel="noreferrer" className="text-body text-secondary hover:text-primary transition-colors inline-flex items-center gap-1.5">
+            GitHub <ArrowUpRight className="w-3 h-3" />
+          </a>
+        </div>
+      </div>
+
+      <div className="border-t border-subtle">
+        <div className="max-w-[1180px] mx-auto px-6 py-5 flex items-center justify-between flex-wrap gap-3">
+          <span className="text-caption text-muted">© 2026 Steel sentinel · zbudowane na Next.js 16 · CesiumJS · OpenAI</span>
+          <span className="text-data text-muted">v2.0 · build sentinel-prod</span>
+        </div>
+      </div>
+    </footer>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Page                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export default function LandingPage() {
+  // Root layout body has `overflow: hidden` (dashboard requirement) — landing needs to scroll.
+  useEffect(() => {
+    const prevBody = document.body.style.overflow;
+    const prevHtml = document.documentElement.style.overflow;
+    document.body.style.overflow = "auto";
+    document.documentElement.style.overflow = "auto";
+    return () => {
+      document.body.style.overflow = prevBody;
+      document.documentElement.style.overflow = prevHtml;
+    };
+  }, []);
+
+  return (
+    <main className="text-primary min-h-screen bg-canvas-gradient">
+      <TopNav />
+      <Hero />
+      <StatsStrip />
+      <Mission />
+      <Features />
+      <Infrastructure />
+      <ThreatsVsDefense />
+      <StrategAI />
+      <TechStack />
+      <ClosingCTA />
+      <Footer />
+    </main>
   );
 }
