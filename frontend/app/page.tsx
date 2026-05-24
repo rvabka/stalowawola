@@ -869,6 +869,26 @@ export default function LandingPage() {
     };
   }, []);
 
+  // CSS scroll-behavior is unreliable when both html and body are scrollable —
+  // intercept anchor clicks and drive the scroll explicitly so it always animates.
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      const anchor = target?.closest("a") as HTMLAnchorElement | null;
+      if (!anchor) return;
+      const href = anchor.getAttribute("href");
+      if (!href || !href.startsWith("#") || href === "#") return;
+      const el = document.getElementById(href.slice(1));
+      if (!el) return;
+      e.preventDefault();
+      const top = el.getBoundingClientRect().top + window.scrollY - 80;
+      window.scrollTo({ top, behavior: "smooth" });
+      history.replaceState(null, "", href);
+    };
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, []);
+
   return (
     <main className="text-primary min-h-screen bg-canvas-gradient">
       <TopNav />
