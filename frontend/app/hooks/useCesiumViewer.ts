@@ -762,7 +762,17 @@ export function useCesiumViewer({
       billboard: {
         image: makeTextLabelImage(
           sys.name + (isRelocating ? ` · marsz ${sys.relocationSecondsLeft}s` : ""),
-          { fontSize: 32, fontWeight: 600, fillColor: isRelocating ? "#d97706" : "#0b1220" }
+          {
+            fontSize: 32,
+            fontWeight: 600,
+            fillColor: isRelocating ? "#fbbf24" : "#ffffff",
+            bg: isRelocating ? "rgba(120, 53, 15, 0.9)" : "rgba(11, 18, 32, 0.88)",
+            strokeColor: null,
+            strokeWidth: 0,
+            paddingX: 16,
+            paddingY: 9,
+            radius: 11
+          }
         ),
         scale: 0.34,
         verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
@@ -1281,7 +1291,17 @@ export function useCesiumViewer({
           id: newSys.id + "_label",
           position: Cesium.Cartesian3.fromDegrees(lon, lat, GROUND_ALT + labelHeight),
           billboard: {
-            image: makeTextLabelImage(newSys.name, { fontSize: 32, fontWeight: 600 }),
+            image: makeTextLabelImage(newSys.name, {
+              fontSize: 32,
+              fontWeight: 600,
+              fillColor: "#ffffff",
+              bg: "rgba(11, 18, 32, 0.88)",
+              strokeColor: null,
+              strokeWidth: 0,
+              paddingX: 16,
+              paddingY: 9,
+              radius: 11
+            }),
             scale: 0.34,
             verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
             horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
@@ -1742,7 +1762,17 @@ export function useCesiumViewer({
       const labelEntity = viewer.entities.add({
         position: Cesium.Cartesian3.fromDegrees(node.lon, node.lat, labelAlt),
         billboard: {
-          image: makeTextLabelImage(node.name, { fontSize: 36, fontWeight: 600 }),
+          image: makeTextLabelImage(node.name, {
+            fontSize: 36,
+            fontWeight: 600,
+            fillColor: "#ffffff",
+            bg: "rgba(11, 18, 32, 0.88)",
+            strokeColor: null,
+            strokeWidth: 0,
+            paddingX: 18,
+            paddingY: 10,
+            radius: 12
+          }),
           scale: 0.34,
           verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
           horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
